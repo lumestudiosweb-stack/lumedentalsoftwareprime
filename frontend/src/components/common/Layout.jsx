@@ -1,6 +1,6 @@
 import { Outlet, Link, useLocation } from 'react-router-dom';
 import { useAuthStore } from '../../contexts/authStore';
-import { LayoutDashboard, Users, Box, MessageSquare, LogOut } from 'lucide-react';
+import { LayoutDashboard, Users, MessageSquare, LogOut, Hexagon } from 'lucide-react';
 
 const NAV_ITEMS = [
   { path: '/', label: 'Dashboard', icon: LayoutDashboard },
@@ -14,45 +14,45 @@ export default function Layout() {
   const user = useAuthStore((s) => s.user);
 
   return (
-    <div className="flex h-screen bg-gray-50">
+    <div className="flex h-screen bg-surface-0">
       {/* Sidebar */}
-      <aside className="w-64 bg-lume-950 text-white flex flex-col">
-        <div className="p-6 border-b border-lume-800">
-          <h1 className="text-xl font-bold flex items-center gap-2">
-            <Box size={24} className="text-lume-400" />
+      <aside className="w-60 bg-surface-1 border-r border-white/5 flex flex-col">
+        <div className="p-5 border-b border-white/5">
+          <h1 className="text-lg font-display font-bold flex items-center gap-2 text-white tracking-tight">
+            <Hexagon size={22} className="text-lume-400" />
             LumeDental
           </h1>
-          <p className="text-lume-400 text-xs mt-1">3D Predictive Platform</p>
+          <p className="text-[11px] text-gray-500 mt-0.5 tracking-wide uppercase">3D Predictive Platform</p>
         </div>
-        <nav className="flex-1 p-4 space-y-1">
+        <nav className="flex-1 p-3 space-y-0.5">
           {NAV_ITEMS.map(({ path, label, icon: Icon }) => {
             const active = location.pathname === path;
             return (
               <Link
                 key={path}
                 to={path}
-                className={`flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm transition ${
+                className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition ${
                   active
-                    ? 'bg-lume-700 text-white font-medium'
-                    : 'text-lume-300 hover:bg-lume-800 hover:text-white'
+                    ? 'bg-white/10 text-white font-medium'
+                    : 'text-gray-500 hover:bg-white/5 hover:text-gray-300'
                 }`}
               >
-                <Icon size={18} />
+                <Icon size={17} strokeWidth={active ? 2 : 1.5} />
                 {label}
               </Link>
             );
           })}
         </nav>
-        <div className="p-4 border-t border-lume-800">
-          <div className="text-sm text-lume-300 mb-2">
+        <div className="p-4 border-t border-white/5">
+          <div className="text-sm text-gray-400 mb-2">
             {user?.first_name} {user?.last_name}
-            <span className="block text-xs text-lume-500 capitalize">{user?.role}</span>
+            <span className="block text-xs text-gray-600 capitalize">{user?.role}</span>
           </div>
           <button
             onClick={logout}
-            className="flex items-center gap-2 text-sm text-lume-400 hover:text-white transition"
+            className="flex items-center gap-2 text-sm text-gray-600 hover:text-gray-300 transition"
           >
-            <LogOut size={16} />
+            <LogOut size={14} />
             Sign Out
           </button>
         </div>

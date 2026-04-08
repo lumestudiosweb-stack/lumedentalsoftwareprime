@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useAuthStore } from '../../contexts/authStore';
 import { authAPI } from '../../services/mockApi';
+import { Hexagon } from 'lucide-react';
 
 export default function Login() {
   const [email, setEmail] = useState('');
@@ -24,40 +25,41 @@ export default function Login() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-lume-950 to-lume-800">
-      <div className="bg-white rounded-2xl shadow-2xl p-10 w-full max-w-md">
+    <div className="min-h-screen flex items-center justify-center bg-surface-0">
+      <div className="bg-surface-2 border border-white/5 rounded-2xl shadow-2xl p-10 w-full max-w-md">
         <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold text-lume-900">LumeDental</h1>
-          <p className="text-gray-500 mt-2">3D Predictive Visualization Platform</p>
+          <Hexagon size={40} className="mx-auto text-lume-400 mb-3" />
+          <h1 className="text-3xl font-display font-bold text-white tracking-tight">LumeDental</h1>
+          <p className="text-gray-500 mt-2 text-sm">3D Predictive Visualization Platform</p>
         </div>
         <form onSubmit={handleSubmit} className="space-y-5">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
+            <label className="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wide">Email</label>
             <input
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
-              className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-lume-500 focus:border-transparent outline-none"
+              className="w-full px-4 py-2.5 bg-surface-3 border border-white/10 text-white rounded-lg focus:ring-2 focus:ring-lume-500/50 focus:border-lume-500/50 outline-none placeholder-gray-600"
               placeholder="doctor@clinic.com"
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
+            <label className="block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wide">Password</label>
             <input
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
-              className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-lume-500 focus:border-transparent outline-none"
+              className="w-full px-4 py-2.5 bg-surface-3 border border-white/10 text-white rounded-lg focus:ring-2 focus:ring-lume-500/50 focus:border-lume-500/50 outline-none placeholder-gray-600"
               placeholder="Enter password"
             />
           </div>
-          {error && <p className="text-red-500 text-sm">{error}</p>}
+          {error && <p className="text-red-400 text-sm">{error}</p>}
           <button
             type="submit"
             disabled={loading}
-            className="w-full bg-lume-600 text-white py-2.5 rounded-lg font-medium hover:bg-lume-700 transition disabled:opacity-50"
+            className="w-full bg-white text-black py-2.5 rounded-lg font-semibold hover:bg-gray-200 transition disabled:opacity-50"
           >
             {loading ? 'Signing in...' : 'Sign In'}
           </button>

@@ -9,31 +9,33 @@ import ToothOverlay, { RealisticTooth } from './ToothOverlay';
 /**
  * Main 3D Dental Viewer — loads real STL/PLY scans and overlays
  * disease/treatment simulations on specific teeth.
+ *
+ * Camera positioned for a front-facing clinical view looking slightly
+ * down into the mouth — like a patient in the chair.
  */
 export default function DentalViewer({ scanUrl, scanFormat, simulation, activeStateIndex }) {
   return (
     <Canvas
-      camera={{ position: [0, 35, 55], fov: 38, near: 0.1, far: 1000 }}
-      gl={{ antialias: true, toneMapping: THREE.ACESFilmicToneMapping, toneMappingExposure: 1.1 }}
+      camera={{ position: [0, 18, 38], fov: 32, near: 0.1, far: 1000 }}
+      gl={{ antialias: true, toneMapping: THREE.ACESFilmicToneMapping, toneMappingExposure: 1.2 }}
       shadows
+      style={{ background: '#000' }}
     >
-      <color attach="background" args={['#0f172a']} />
+      <color attach="background" args={['#000000']} />
 
-      {/* Lighting — dental operatory style */}
-      <ambientLight intensity={0.4} />
-      <directionalLight position={[15, 35, 15]} intensity={1.4} castShadow shadow-mapSize={[2048, 2048]} />
-      <directionalLight position={[-15, 25, -10]} intensity={0.5} />
-      <spotLight position={[0, 45, 5]} intensity={0.7} angle={0.4} penumbra={0.6} />
-      <pointLight position={[0, -10, 20]} intensity={0.3} color="#ffeedd" />
+      {/* Lighting — bright clinical with rim light */}
+      <ambientLight intensity={0.5} />
+      <directionalLight position={[10, 30, 20]} intensity={1.6} castShadow shadow-mapSize={[2048, 2048]} color="#fff" />
+      <directionalLight position={[-10, 20, -15]} intensity={0.6} color="#eef" />
+      <spotLight position={[0, 40, 5]} intensity={0.9} angle={0.5} penumbra={0.5} color="#fff" />
+      <pointLight position={[0, -10, 25]} intensity={0.4} color="#ffeedd" />
+      {/* Rim lights for depth */}
+      <pointLight position={[20, 5, -10]} intensity={0.3} color="#aaccff" />
+      <pointLight position={[-20, 5, -10]} intensity={0.3} color="#aaccff" />
 
       <Suspense fallback={<LoadingIndicator />}>
         {scanUrl ? (
-          <ScanMesh
-            url={scanUrl}
-            format={scanFormat}
-            simulation={simulation}
-            activeStateIndex={activeStateIndex}
-          />
+          <ScanMesh url={scanUrl} format={scanFormat} simulation={simulation} activeStateIndex={activeStateIndex} />
         ) : (
           <PlaceholderArch simulation={simulation} activeStateIndex={activeStateIndex} />
         )}
@@ -42,8 +44,8 @@ export default function DentalViewer({ scanUrl, scanFormat, simulation, activeSt
       <OrbitControls
         enableDamping
         dampingFactor={0.08}
-        minDistance={15}
-        maxDistance={120}
+        minDistance={12}
+        maxDistance={100}
         maxPolarAngle={Math.PI * 0.85}
         target={[0, 0, 0]}
       />
@@ -63,15 +65,12 @@ function ScanMesh({ url, format, simulation, activeStateIndex }) {
     loader.load(url, (geo) => {
       geo.computeVertexNormals();
       geo.center();
-
       geo.computeBoundingBox();
-      const box = geo.boundingBox;
       const size = new THREE.Vector3();
-      box.getSize(size);
+      geo.boundingBox.getSize(size);
       const maxDim = Math.max(size.x, size.y, size.z);
       const scale = 30 / maxDim;
       geo.scale(scale, scale, scale);
-
       setGeometry(geo);
     });
   }, [url, format]);
@@ -83,27 +82,14 @@ function ScanMesh({ url, format, simulation, activeStateIndex }) {
   return (
     <group>
       <mesh ref={meshRef} geometry={geometry} castShadow receiveShadow>
-        <meshPhysicalMaterial
-          color="#f0ece4"
-          roughness={0.35}
-          metalness={0.05}
-          clearcoat={0.3}
-          clearcoatRoughness={0.2}
-        />
+        <meshPhysicalMaterial color="#f0ece4" roughness={0.35} metalness={0.05} clearcoat={0.3} clearcoatRoughness={0.2} />
       </mesh>
-
       {activeState && simulation && (
-        <ToothOverlay
-          state={activeState}
-          module={simulation.module}
-          targetTeeth={simulation.target_teeth}
-          toothNumber={simulation.target_teeth?.[0]}
-        />
+        <ToothOverlay state={activeState} module={simulation.module} targetTeeth={simulation.target_teeth} toothNumber={simulation.target_teeth?.[0]} />
       )}
-
       {activeState?.label && (
         <Html position={[0, 20, 0]} center>
-          <div className="bg-black/80 text-white px-4 py-2 rounded-xl text-sm font-medium whitespace-nowrap backdrop-blur-sm border border-white/10">
+          <div className="bg-black/90 text-white px-4 py-2 rounded-lg text-xs font-medium whitespace-nowrap border border-white/10">
             {activeState.label}
           </div>
         </Html>
@@ -129,40 +115,35 @@ function generateTeethData() {
       const isPremolar = pos >= 4 && pos < 6;
       const isCanine = pos === 3;
 
-      // Tooth dimensions
-      const width = isMolar ? 1.15 : isPremolar ? 0.85 : isCanine ? 0.72 : (pos === 1 ? 0.7 : 0.6);
-      const height = isMolar ? 0.85 : isPremolar ? 1.05 : isCanine ? 1.35 : (pos === 1 ? 1.25 : 1.0);
-      const depth = isMolar ? 1.05 : isPremolar ? 0.8 : isCanine ? 0.6 : 0.45;
+      // Bigger, more realistic tooth dimensions
+      const width = isMolar ? 1.3 : isPremolar ? 0.95 : isCanine ? 0.8 : (pos === 1 ? 0.85 : 0.65);
+      const height = isMolar ? 1.0 : isPremolar ? 1.2 : isCanine ? 1.5 : (pos === 1 ? 1.4 : 1.1);
+      const depth = isMolar ? 1.2 : isPremolar ? 0.9 : isCanine ? 0.7 : 0.5;
       const toothType = isMolar ? 'molar' : isPremolar ? 'premolar' : isCanine ? 'canine' : 'incisor';
 
-      // Position along a U-shaped arch (parabolic curve)
-      // Incisors at front, molars at back
-      const posInArch = idx; // 0 = most posterior (8/molar), 7 = most anterior (1/central incisor)
-      const t = posInArch / 7; // 0..1 from back to front
+      // U-shaped arch — wider and more realistic proportions
+      const posInArch = idx;
+      const t = posInArch / 7;
 
-      const archWidth = 13;
-      const archDepth = 14;
+      const archWidth = 14;
+      const archDepth = 16;
       let x, z;
 
       if (side === 'right') {
-        // Right side: negative x
-        x = -(1 - t) * archWidth * 0.95 - t * 0.5;
-        z = (1 - t) * (1 - t) * archDepth - archDepth * 0.3;
+        x = -(1 - t) * archWidth * 0.92 - t * 0.6;
+        z = (1 - t) * (1 - t) * archDepth - archDepth * 0.25;
       } else {
-        // Left side: positive x
-        x = (1 - t) * archWidth * 0.95 + t * 0.5;
-        z = (1 - t) * (1 - t) * archDepth - archDepth * 0.3;
+        x = (1 - t) * archWidth * 0.92 + t * 0.6;
+        z = (1 - t) * (1 - t) * archDepth - archDepth * 0.25;
       }
 
-      const y = arch === 'upper' ? 1.5 : -1.5;
+      // Upper and lower arches separated more
+      const y = arch === 'upper' ? 2.5 : -2.5;
 
-      // Rotation: teeth angle to follow the arch curve
       let angle;
       if (t > 0.8) {
-        // Front teeth — face forward
         angle = side === 'right' ? -0.1 : 0.1;
       } else {
-        // Side/back teeth — angle along the arch
         const curveAngle = Math.atan2(x, z);
         angle = -curveAngle;
       }
@@ -187,34 +168,22 @@ function PlaceholderArch({ simulation, activeStateIndex }) {
   const targetTeeth = simulation?.target_teeth || [];
 
   const teeth = useMemo(() => generateTeethData(), []);
-
-  // Generate gum shape points
-  const upperGumShape = useMemo(() => {
-    const upperTeeth = teeth.filter((t) => t.arch === 'upper');
-    return createGumPath(upperTeeth);
-  }, [teeth]);
-
-  const lowerGumShape = useMemo(() => {
-    const lowerTeeth = teeth.filter((t) => t.arch === 'lower');
-    return createGumPath(lowerTeeth);
-  }, [teeth]);
-
   const isPerioInflamed = activeState?.clinical_metrics?.pocket_depth_mm > 5;
 
   return (
-    <group ref={groupRef}>
+    <group ref={groupRef} rotation={[0.15, 0, 0]}>
       {/* Upper Gingiva */}
       <GumTissue
         teeth={teeth.filter((t) => t.arch === 'upper')}
-        yOffset={1.5}
-        color={isPerioInflamed ? '#c0392b' : '#e8948d'}
+        yOffset={2.5}
+        color={isPerioInflamed ? '#a83228' : '#c47872'}
         arch="upper"
       />
       {/* Lower Gingiva */}
       <GumTissue
         teeth={teeth.filter((t) => t.arch === 'lower')}
-        yOffset={-1.5}
-        color="#e8948d"
+        yOffset={-2.5}
+        color="#c47872"
         arch="lower"
       />
 
@@ -232,17 +201,12 @@ function PlaceholderArch({ simulation, activeStateIndex }) {
                 toothSize={[tooth.width, tooth.height, tooth.depth]}
               />
             ) : (
-              <RealisticTooth
-                w={tooth.width}
-                h={tooth.height}
-                d={tooth.depth}
-                toothType={tooth.toothType}
-              />
+              <RealisticTooth w={tooth.width} h={tooth.height} d={tooth.depth} toothType={tooth.toothType} />
             )}
             {/* Tooth number label */}
-            <Html position={[0, tooth.arch === 'upper' ? 1.5 : -1.5, 0]} center>
+            <Html position={[0, tooth.arch === 'upper' ? 2.0 : -2.0, 0]} center>
               <div className={`text-[9px] px-1 rounded select-none ${
-                isTarget ? 'bg-lume-600 text-white font-bold' : 'text-gray-500/70'
+                isTarget ? 'bg-white text-black font-bold' : 'text-gray-600'
               }`}>
                 {tooth.fdi}
               </div>
@@ -253,8 +217,8 @@ function PlaceholderArch({ simulation, activeStateIndex }) {
 
       {/* State label */}
       {activeState?.label && (
-        <Html position={[0, 8, 0]} center>
-          <div className="bg-black/80 text-white px-4 py-2 rounded-xl text-sm font-medium whitespace-nowrap backdrop-blur-sm border border-white/10">
+        <Html position={[0, 10, 0]} center>
+          <div className="bg-black/90 text-white px-4 py-2 rounded-lg text-xs font-medium whitespace-nowrap border border-white/10">
             {activeState.label}
           </div>
         </Html>
@@ -266,7 +230,6 @@ function PlaceholderArch({ simulation, activeStateIndex }) {
 /* ── Gum tissue — follows arch shape ──────────────────────── */
 
 function GumTissue({ teeth, yOffset, color, arch }) {
-  // Create a thick gum band that follows the teeth positions
   return (
     <group>
       {teeth.map((tooth, i) => {
@@ -279,33 +242,32 @@ function GumTissue({ teeth, yOffset, color, arch }) {
         const dz = nextTooth.z - tooth.z;
         const dist = Math.sqrt(dx * dx + dz * dz);
         const angle = Math.atan2(dx, dz);
-        const gumY = arch === 'upper' ? yOffset - 0.3 : yOffset + 0.3;
+        const gumY = arch === 'upper' ? yOffset - 0.4 : yOffset + 0.4;
 
         return (
           <mesh key={`gum-${tooth.fdi}`} position={[midX, gumY, midZ]} rotation={[0, -angle, 0]} castShadow>
-            <boxGeometry args={[1.8, 1.2, dist + 0.4]} />
+            <boxGeometry args={[2.0, 1.4, dist + 0.5]} />
             <meshPhysicalMaterial
               color={color}
-              roughness={0.82}
+              roughness={0.85}
               metalness={0}
-              clearcoat={0.15}
-              clearcoatRoughness={0.5}
+              clearcoat={0.1}
+              clearcoatRoughness={0.6}
             />
           </mesh>
         );
       })}
-      {/* Rounded caps at ends and fill gaps */}
       {teeth.map((tooth) => {
-        const gumY = arch === 'upper' ? yOffset - 0.3 : yOffset + 0.3;
+        const gumY = arch === 'upper' ? yOffset - 0.4 : yOffset + 0.4;
         return (
           <mesh key={`gum-cap-${tooth.fdi}`} position={[tooth.x, gumY, tooth.z]} castShadow>
-            <cylinderGeometry args={[0.9, 0.85, 1.2, 10]} />
+            <cylinderGeometry args={[1.0, 0.95, 1.4, 12]} />
             <meshPhysicalMaterial
               color={color}
-              roughness={0.82}
+              roughness={0.85}
               metalness={0}
-              clearcoat={0.15}
-              clearcoatRoughness={0.5}
+              clearcoat={0.1}
+              clearcoatRoughness={0.6}
             />
           </mesh>
         );
@@ -314,17 +276,13 @@ function GumTissue({ teeth, yOffset, color, arch }) {
   );
 }
 
-function createGumPath(teeth) {
-  return teeth.map((t) => new THREE.Vector2(t.x, t.z));
-}
-
 /* ── Loading indicator ──────────────────────────────────────── */
 
 function LoadingIndicator() {
   return (
     <Html center>
-      <div className="text-white text-sm flex items-center gap-2">
-        <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+      <div className="text-gray-400 text-xs flex items-center gap-2 font-medium">
+        <div className="w-3 h-3 border-2 border-gray-600 border-t-white rounded-full animate-spin" />
         Loading 3D scan...
       </div>
     </Html>
