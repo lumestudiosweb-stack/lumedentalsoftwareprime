@@ -1,8 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { simulationAPI, patientAPI } from '../../services/mockApi';
+import { simulationAPI, patientAPI, scanAPI } from '../../services/mockApi';
 import DentalViewer from './DentalViewer';
-import { ChevronLeft, ChevronRight, Loader2, ArrowLeft, Play, Pause } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Loader2, ArrowLeft, Play, Pause, Upload } from 'lucide-react';
 
 export default function SimulationView() {
   const { id } = useParams();
@@ -11,6 +11,9 @@ export default function SimulationView() {
   const [activeState, setActiveState] = useState(0);
   const [loading, setLoading] = useState(true);
   const [autoPlay, setAutoPlay] = useState(false);
+  const [scanUrl, setScanUrl] = useState(null);
+  const [scanFormat, setScanFormat] = useState('stl');
+  const fileInputRef = useRef(null);
 
   useEffect(() => {
     async function load() {
@@ -21,6 +24,14 @@ export default function SimulationView() {
           const { data: p } = await patientAPI.get(data.patient_id);
           setPatient(p);
         }
+        // Try to load the associated scan
+        if (data?.parent_scan_id) {
+          const { data: scan } = await scanAPI.get(data.parent_scan_id);
+          if (scan?.storage_path && scan.storage_path.startsWith('blob:')) {
+            setScanUrl(scan.storage_path);
+            setScanFormat(scan.file_format || 'stl');
+          }
+        }
       } catch {
         // handle
       } finally {
@@ -29,6 +40,17 @@ export default function SimulationView() {
     }
     load();
   }, [id]);
+
+  // Direct STL/PLY upload on the simulation page
+  const handleFileUpload = useCallback((e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const ext = file.name.split('.').pop().toLowerCase();
+    if (!['stl', 'ply', 'obj'].includes(ext)) return;
+    const url = URL.createObjectURL(file);
+    setScanUrl(url);
+    setScanFormat(ext);
+  }, []);
 
   useEffect(() => {
     if (!autoPlay || !simulation?.states?.length) return;
@@ -69,6 +91,15 @@ export default function SimulationView() {
             </div>
           </div>
           <div className="flex items-center gap-3">
+            {/* Upload STL/PLY button */}
+            <input ref={fileInputRef} type="file" accept=".stl,.ply,.obj" className="hidden" onChange={handleFileUpload} />
+            <button onClick={() => fileInputRef.current?.click()}
+              className={`flex items-center gap-1.5 text-[11px] px-3 py-1.5 rounded-lg border transition ${
+                scanUrl ? 'border-green-500/20 text-green-400 bg-green-500/5' : 'border-white/10 text-gray-400 hover:text-white hover:bg-white/5'
+              }`}>
+              <Upload size={12} />
+              {scanUrl ? 'Scan Loaded' : 'Load STL/PLY'}
+            </button>
             {simulation.target_teeth?.length > 0 && (
               <div className="flex items-center gap-1.5">
                 <span className="text-[11px] text-gray-600">Teeth:</span>
@@ -89,7 +120,7 @@ export default function SimulationView() {
       {/* 3D Viewer + Metrics Panel */}
       <div className="flex-1 flex relative">
         <div className="flex-1 bg-black">
-          <DentalViewer simulation={simulation} activeStateIndex={activeState} />
+          <DentalViewer simulation={simulation} activeStateIndex={activeState} scanUrl={scanUrl} scanFormat={scanFormat} />
         </div>
 
         {/* Side Panel */}
