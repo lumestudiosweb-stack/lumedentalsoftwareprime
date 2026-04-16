@@ -1,6 +1,6 @@
 import { useRef, useState, useEffect, useMemo, Suspense } from 'react';
-import { Canvas, useThree, useLoader } from '@react-three/fiber';
-import { OrbitControls, Environment, Html, Center } from '@react-three/drei';
+import { Canvas, useThree, useLoader, useFrame as useFrameImpl } from '@react-three/fiber';
+import { OrbitControls, Environment, Html, Center, Line } from '@react-three/drei';
 import * as THREE from 'three';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
@@ -56,9 +56,56 @@ export default function DentalViewer({ scanUrl, scanFormat, simulation, activeSt
 
 /* ── Real STL/PLY Mesh Loader ─────────────────────────────── */
 
+/**
+ * Maps a clinical stage / treatment to a material tint applied to the
+ * uploaded STL/PLY scan, so changing the timeline slider visibly
+ * recolors the scan AND moves a floating "callout tooth" overlay.
+ */
+function getStageStyling(activeState) {
+  const stage = activeState?.clinical_metrics?.stage;
+  const treatment = activeState?.clinical_metrics?.treatment;
+  const pocket = activeState?.clinical_metrics?.pocket_depth_mm;
+
+  // Treatments take priority
+  if (treatment === 'zirconia_crown' || treatment === 'rct_crown' || stage === 'restored') {
+    return { color: '#e8f4ff', emissive: '#3a6fa8', emissiveIntensity: 0.18, label: 'Restored', markerColor: '#4a9eff' };
+  }
+  if (treatment === 'composite_filling') {
+    return { color: '#f4ede0', emissive: '#a88030', emissiveIntensity: 0.12, label: 'Filled', markerColor: '#d4a04a' };
+  }
+  if (treatment === 'root_canal' || stage === 'endodontic') {
+    return { color: '#e8e0d0', emissive: '#883322', emissiveIntensity: 0.18, label: 'Endo', markerColor: '#cc5544' };
+  }
+
+  // Disease progression
+  switch (stage) {
+    case 'enamel':
+      return { color: '#ebe3cf', emissive: '#8a6520', emissiveIntensity: 0.2, label: 'Enamel Lesion', markerColor: '#c89438' };
+    case 'dentin':
+      return { color: '#d8c8a8', emissive: '#6a3810', emissiveIntensity: 0.35, label: 'Dentin Caries', markerColor: '#8a4a18' };
+    case 'pulp':
+      return { color: '#d0b090', emissive: '#aa1a1a', emissiveIntensity: 0.5, label: 'Pulpitis', markerColor: '#dd2222' };
+    case 'abscess':
+      return { color: '#b89878', emissive: '#cc2200', emissiveIntensity: 0.7, label: 'Abscess', markerColor: '#ff3322' };
+    case 'extracted':
+      return { color: '#a08878', emissive: '#440000', emissiveIntensity: 0.25, label: 'Extracted', markerColor: '#882222' };
+    default:
+      break;
+  }
+
+  // Periodontal inflammation (no stage but high pocket depth)
+  if (typeof pocket === 'number' && pocket > 5) {
+    return { color: '#dab0a8', emissive: '#aa3322', emissiveIntensity: 0.3, label: 'Inflamed Gingiva', markerColor: '#cc4433' };
+  }
+
+  // Healthy / baseline
+  return { color: '#f0ece4', emissive: '#000000', emissiveIntensity: 0, label: 'Healthy', markerColor: '#4ade80' };
+}
+
 function ScanMesh({ url, format, simulation, activeStateIndex }) {
   const meshRef = useRef();
   const [geometry, setGeometry] = useState(null);
+  const [bbox, setBbox] = useState(null);
 
   useEffect(() => {
     const loader = format === 'ply' ? new PLYLoader() : new STLLoader();
@@ -71,31 +118,161 @@ function ScanMesh({ url, format, simulation, activeStateIndex }) {
       const maxDim = Math.max(size.x, size.y, size.z);
       const scale = 30 / maxDim;
       geo.scale(scale, scale, scale);
+      geo.computeBoundingBox();
+      const finalSize = new THREE.Vector3();
+      geo.boundingBox.getSize(finalSize);
+      setBbox({
+        sizeX: finalSize.x,
+        sizeY: finalSize.y,
+        sizeZ: finalSize.z,
+        topY: geo.boundingBox.max.y,
+        frontZ: geo.boundingBox.max.z,
+      });
       setGeometry(geo);
     });
   }, [url, format]);
 
-  if (!geometry) return <LoadingIndicator />;
-
+  // Animate emissive pulse for active disease states
+  const matRef = useRef();
   const activeState = simulation?.states?.[activeStateIndex];
+  const styling = useMemo(() => getStageStyling(activeState), [activeState]);
+  const isPulsing = ['pulp', 'abscess'].includes(activeState?.clinical_metrics?.stage);
+
+  // We re-create material props whenever the active state changes so React
+  // applies a brand new material — this is what makes the slider visibly
+  // recolor the scan in real time.
+  if (!geometry || !bbox) return <LoadingIndicator />;
+
+  const calloutY = bbox.topY + 8;          // Floating tooth above scan
+  const calloutSize = [3.2, 4.2, 2.4];     // Big enough to read clearly
+  const markerY = bbox.topY - 0.5;         // Marker just below crown of scan
 
   return (
     <group>
+      {/* Scanned arch — tinted by current state */}
       <mesh ref={meshRef} geometry={geometry} castShadow receiveShadow>
-        <meshPhysicalMaterial color="#f0ece4" roughness={0.35} metalness={0.05} clearcoat={0.3} clearcoatRoughness={0.2} />
+        <meshPhysicalMaterial
+          ref={matRef}
+          color={styling.color}
+          emissive={styling.emissive}
+          emissiveIntensity={styling.emissiveIntensity}
+          roughness={0.35}
+          metalness={0.05}
+          clearcoat={0.3}
+          clearcoatRoughness={0.2}
+        />
       </mesh>
-      {activeState && simulation && (
-        <ToothOverlay state={activeState} module={simulation.module} targetTeeth={simulation.target_teeth} toothNumber={simulation.target_teeth?.[0]} />
+
+      {/* Pulsing disease marker on the scan surface */}
+      {activeState && styling.label !== 'Healthy' && (
+        <PulseMarker position={[0, markerY, bbox.frontZ * 0.6]} color={styling.markerColor} pulse={isPulsing} />
       )}
+
+      {/* Connecting line from scan up to floating callout tooth */}
+      {activeState && (
+        <ConnectorLine
+          from={[0, markerY, bbox.frontZ * 0.6]}
+          to={[0, calloutY - calloutSize[1] * 0.5, 0]}
+          color={styling.markerColor}
+        />
+      )}
+
+      {/* Floating "callout" tooth showing the disease/treatment in detail */}
+      {activeState && simulation && (
+        <group position={[0, calloutY, 0]}>
+          <ToothOverlay
+            state={activeState}
+            module={simulation.module}
+            targetTeeth={simulation.target_teeth}
+            toothNumber={simulation.target_teeth?.[0]}
+            toothSize={calloutSize}
+          />
+        </group>
+      )}
+
+      {/* State label — top of scene */}
       {activeState?.label && (
-        <Html position={[0, 20, 0]} center>
-          <div className="bg-black/90 text-white px-4 py-2 rounded-lg text-xs font-medium whitespace-nowrap border border-white/10">
+        <Html position={[0, calloutY + calloutSize[1] * 0.7 + 1.5, 0]} center>
+          <div className="bg-black/90 text-white px-4 py-2 rounded-lg text-xs font-medium whitespace-nowrap border border-white/10 flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full" style={{ background: styling.markerColor }} />
             {activeState.label}
+          </div>
+        </Html>
+      )}
+
+      {/* Stage badge near marker */}
+      {activeState && (
+        <Html position={[bbox.sizeX * 0.55, markerY, bbox.frontZ * 0.6]} center>
+          <div
+            className="px-2 py-1 rounded text-[10px] font-semibold whitespace-nowrap border"
+            style={{
+              background: 'rgba(0,0,0,0.85)',
+              borderColor: styling.markerColor,
+              color: styling.markerColor,
+            }}
+          >
+            {styling.label}
           </div>
         </Html>
       )}
     </group>
   );
+}
+
+/* ── Pulsing surface marker ─────────────────────────────────── */
+
+function PulseMarker({ position, color, pulse }) {
+  const ringRef = useRef();
+  const dotRef = useRef();
+  useFrameSafe(({ clock }) => {
+    const t = clock.elapsedTime;
+    if (ringRef.current) {
+      const s = pulse ? 1 + Math.sin(t * 3) * 0.3 : 1 + Math.sin(t * 1.2) * 0.1;
+      ringRef.current.scale.set(s, s, s);
+      ringRef.current.material.opacity = pulse ? 0.6 + Math.sin(t * 3) * 0.3 : 0.5;
+    }
+    if (dotRef.current && pulse) {
+      dotRef.current.material.emissiveIntensity = 0.7 + Math.sin(t * 3) * 0.4;
+    }
+  });
+
+  return (
+    <group position={position}>
+      <mesh ref={dotRef}>
+        <sphereGeometry args={[0.5, 16, 16]} />
+        <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.7} />
+      </mesh>
+      <mesh ref={ringRef} rotation={[-Math.PI / 2, 0, 0]}>
+        <ringGeometry args={[0.7, 1.0, 32]} />
+        <meshBasicMaterial color={color} transparent opacity={0.6} side={THREE.DoubleSide} />
+      </mesh>
+    </group>
+  );
+}
+
+/* ── Connector line between scan marker and callout tooth ──── */
+
+function ConnectorLine({ from, to, color }) {
+  return (
+    <Line
+      points={[from, to]}
+      color={color}
+      lineWidth={1.5}
+      dashed
+      dashSize={0.4}
+      gapSize={0.25}
+      transparent
+      opacity={0.7}
+    />
+  );
+}
+
+/* Small wrapper so PulseMarker can call useFrame without crashing if drei tree changes */
+function useFrameSafe(cb) {
+  // Imported via @react-three/fiber at top of file
+  // Local re-export to keep PulseMarker self-contained
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  useFrameImpl(cb);
 }
 
 /* ── Tooth data generator ───────────────────────────────────── */
