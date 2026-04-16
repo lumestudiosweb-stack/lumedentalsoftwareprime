@@ -14,32 +14,27 @@ import ToothOverlay, { RealisticTooth } from './ToothOverlay';
  * down into the mouth — like a patient in the chair.
  */
 export default function DentalViewer({ scanUrl, scanFormat, simulation, activeStateIndex }) {
-  // Pull camera back further when showing the side-by-side scan view
-  const cameraConfig = scanUrl
-    ? { position: [0, 22, 70], fov: 38, near: 0.1, far: 1000 }
-    : { position: [0, 18, 38], fov: 32, near: 0.1, far: 1000 };
-
   return (
     <Canvas
-      camera={cameraConfig}
+      camera={{ position: [0, 14, 42], fov: 34, near: 0.1, far: 1000 }}
       gl={{ antialias: true, toneMapping: THREE.ACESFilmicToneMapping, toneMappingExposure: 1.1 }}
       shadows
       style={{ background: '#000' }}
     >
       <color attach="background" args={['#000000']} />
 
-      {/* Lighting — clinical, dimmed slightly so emissive disease colors pop */}
-      <ambientLight intensity={0.35} />
-      <directionalLight position={[10, 30, 20]} intensity={1.2} castShadow shadow-mapSize={[2048, 2048]} color="#fff" />
-      <directionalLight position={[-10, 20, -15]} intensity={0.45} color="#eef" />
-      <spotLight position={[0, 40, 5]} intensity={0.7} angle={0.5} penumbra={0.5} color="#fff" />
-      <pointLight position={[0, -10, 25]} intensity={0.3} color="#ffeedd" />
-      <pointLight position={[20, 5, -10]} intensity={0.25} color="#aaccff" />
-      <pointLight position={[-20, 5, -10]} intensity={0.25} color="#aaccff" />
+      {/* Clinical lighting */}
+      <ambientLight intensity={0.5} />
+      <directionalLight position={[10, 30, 20]} intensity={1.4} castShadow shadow-mapSize={[2048, 2048]} color="#fff" />
+      <directionalLight position={[-10, 20, -15]} intensity={0.55} color="#eef" />
+      <spotLight position={[0, 40, 5]} intensity={0.8} angle={0.5} penumbra={0.5} color="#fff" />
+      <pointLight position={[0, -10, 25]} intensity={0.35} color="#ffeedd" />
+      <pointLight position={[20, 5, -10]} intensity={0.28} color="#aaccff" />
+      <pointLight position={[-20, 5, -10]} intensity={0.28} color="#aaccff" />
 
       <Suspense fallback={<LoadingIndicator />}>
         {scanUrl ? (
-          <SplitScanView url={scanUrl} format={scanFormat} simulation={simulation} activeStateIndex={activeStateIndex} />
+          <TreatmentJourney url={scanUrl} format={scanFormat} simulation={simulation} activeStateIndex={activeStateIndex} />
         ) : (
           <PlaceholderArch simulation={simulation} activeStateIndex={activeStateIndex} />
         )}
@@ -53,7 +48,7 @@ export default function DentalViewer({ scanUrl, scanFormat, simulation, activeSt
         maxPolarAngle={Math.PI * 0.85}
         target={[0, 0, 0]}
       />
-      <Environment preset="studio" environmentIntensity={0.4} />
+      <Environment preset="studio" environmentIntensity={0.5} />
     </Canvas>
   );
 }
@@ -107,14 +102,20 @@ function getStageStyling(activeState) {
 }
 
 /**
- * SplitScanView — renders the same scan TWICE side by side.
- *   LEFT  = "BEFORE" (always healthy, frozen at state 0)
- *   RIGHT = "AFTER"  (driven by the timeline slider)
+ * TreatmentJourney — a single scan that evolves through the timeline.
  *
- * This gives the patient a true side-by-side comparison of what
- * their mouth looks like now vs. what will happen if untreated.
+ * The patient sees ONE mouth. As they drag the slider:
+ *   • The affected tooth area is highlighted with a marker + aura
+ *   • A magnified "tooth detail" callout to the right shows what's
+ *     happening at that specific tooth at this point in time
+ *   • The scan tint changes subtly (not a full red wash) to reflect
+ *     overall health at that step
+ *
+ * This frames the slider as a treatment / projection journey rather
+ * than a "before vs after" comparison.
  */
-function SplitScanView({ url, format, simulation, activeStateIndex }) {
+function TreatmentJourney({ url, format, simulation, activeStateIndex }) {
+  const meshRef = useRef();
   const [geometry, setGeometry] = useState(null);
   const [bbox, setBbox] = useState(null);
 
@@ -127,7 +128,7 @@ function SplitScanView({ url, format, simulation, activeStateIndex }) {
       const size = new THREE.Vector3();
       geo.boundingBox.getSize(size);
       const maxDim = Math.max(size.x, size.y, size.z);
-      const scale = 24 / maxDim; // smaller so two fit side by side
+      const scale = 22 / maxDim; // leave room for the side detail callout
       geo.scale(scale, scale, scale);
       geo.computeBoundingBox();
       const finalSize = new THREE.Vector3();
@@ -143,104 +144,50 @@ function SplitScanView({ url, format, simulation, activeStateIndex }) {
     });
   }, [url, format]);
 
-  if (!geometry || !bbox) return <LoadingIndicator />;
-
-  const baselineState = simulation?.states?.[0] || null;
   const activeState = simulation?.states?.[activeStateIndex] || null;
-  const isAtBaseline = activeStateIndex === 0;
-
-  // Horizontal offset so the two scans don't overlap
-  const half = bbox.sizeX * 0.5;
-  const gap = 4;
-  const sideOffset = half + gap;
-
-  return (
-    <group>
-      {/* ── LEFT: BEFORE ─────────────────────────── */}
-      <group position={[-sideOffset, 0, 0]}>
-        <ScanInstance
-          geometry={geometry}
-          bbox={bbox}
-          state={baselineState}
-          simulation={simulation}
-          label="BEFORE"
-          sublabel="Current State"
-          accent="#4ade80"
-        />
-      </group>
-
-      {/* ── Vertical divider line between the two ─ */}
-      <Line
-        points={[[0, -bbox.sizeY * 0.6, 0], [0, bbox.sizeY * 0.7, 0]]}
-        color="#ffffff"
-        lineWidth={1}
-        dashed
-        dashSize={0.6}
-        gapSize={0.4}
-        transparent
-        opacity={0.25}
-      />
-
-      {/* ── RIGHT: AFTER ─────────────────────────── */}
-      <group position={[sideOffset, 0, 0]}>
-        <ScanInstance
-          geometry={geometry}
-          bbox={bbox}
-          state={activeState}
-          simulation={simulation}
-          label={isAtBaseline ? 'AFTER' : `AFTER · ${stripMonthLabel(activeState?.label)}`}
-          sublabel={activeState?.label || ''}
-          accent={isAtBaseline ? '#4ade80' : getStageStyling(activeState).markerColor}
-          showOverlay
-        />
-      </group>
-    </group>
-  );
-}
-
-/** Pulls "3 Months" out of "3 Months — Enamel Demineralization" for compact labels */
-function stripMonthLabel(label) {
-  if (!label) return '';
-  const m = label.split('—')[0].trim();
-  return m || label;
-}
-
-/**
- * One half of the split view — a single scan instance with its own
- * material tint, marker, badge, and BEFORE/AFTER label.
- */
-function ScanInstance({ geometry, bbox, state, simulation, label, sublabel, accent, showOverlay }) {
-  const meshRef = useRef();
-  const styling = useMemo(() => getStageStyling(state), [state]);
-  const stage = state?.clinical_metrics?.stage;
-  const isPulsing = showOverlay && ['pulp', 'abscess'].includes(stage);
+  const styling = useMemo(() => getStageStyling(activeState), [activeState]);
+  const stage = activeState?.clinical_metrics?.stage;
+  const isPulsing = ['pulp', 'abscess'].includes(stage);
   const isHealthy = styling.label === 'Healthy';
 
-  // Imperatively drive the material every frame so prop-update edge cases
-  // don't leave the scan stuck on the old color.
+  // Drive the material imperatively so the slider always recolors the scan,
+  // but with much SUBTLER intensity than before — we don't want the whole
+  // arch glowing red. The marker + callout do the heavy lifting visually.
   useFrameImpl(({ clock }) => {
     if (!meshRef.current) return;
     const mat = meshRef.current.material;
     mat.color.set(styling.color);
     mat.emissive.set(styling.emissive);
-    let intensity = styling.emissiveIntensity;
+    // Scale intensity WAY down — the scan should look like a real scan,
+    // not a horror movie. Only the affected zone gets dramatic.
+    let intensity = styling.emissiveIntensity * 0.15;
     if (isPulsing) {
-      intensity = styling.emissiveIntensity + Math.sin(clock.elapsedTime * 3) * 0.6;
+      intensity += Math.sin(clock.elapsedTime * 3) * 0.05;
     }
     mat.emissiveIntensity = Math.max(0, intensity);
   });
 
-  const markerY = bbox.topY - 0.5;
-  const markerZ = bbox.frontZ * 0.6;
+  if (!geometry || !bbox) return <LoadingIndicator />;
+
+  // Position the affected-zone marker on the scan surface
+  const markerPos = [0, bbox.topY - 0.5, bbox.frontZ * 0.55];
+
+  // Position the magnified detail callout to the RIGHT of the scan
+  const calloutPos = [bbox.sizeX * 0.55 + 6, 0, 0];
+  const calloutSize = [3.0, 4.0, 2.2];
+
+  // Shorthand month label for the callout header (e.g. "3 Months")
+  const monthLabel = activeState?.label?.split('—')[0]?.trim() || '';
+  const detailLabel = activeState?.label?.split('—')[1]?.trim() || activeState?.label || '';
 
   return (
     <group>
-      {/* The scan itself */}
+      {/* The patient's actual scan — kept looking like a scan */}
       <mesh ref={meshRef} geometry={geometry} castShadow receiveShadow>
         <meshPhysicalMaterial
           color={styling.color}
           emissive={styling.emissive}
-          emissiveIntensity={styling.emissiveIntensity}
+          emissiveIntensity={styling.emissiveIntensity * 0.15}
           roughness={0.4}
           metalness={0.05}
           clearcoat={0.25}
@@ -248,55 +195,85 @@ function ScanInstance({ geometry, bbox, state, simulation, label, sublabel, acce
         />
       </mesh>
 
-      {/* Disease marker — only on the AFTER side and only when not healthy */}
-      {showOverlay && !isHealthy && (
+      {/* Affected-zone marker on the scan */}
+      {!isHealthy && (
         <>
-          <PulseMarker position={[0, markerY, markerZ]} color={styling.markerColor} pulse={isPulsing} />
-          {/* Big translucent "disease aura" so it's unmistakable */}
+          <PulseMarker position={markerPos} color={styling.markerColor} pulse={isPulsing} />
           <DiseaseAura
-            position={[0, markerY - 0.5, markerZ - 0.5]}
-            radius={Math.min(bbox.sizeX, bbox.sizeY) * 0.18}
+            position={[markerPos[0], markerPos[1] - 0.4, markerPos[2] - 0.4]}
+            radius={Math.min(bbox.sizeX, bbox.sizeY) * 0.14}
             color={styling.aura || styling.markerColor}
             pulse={isPulsing}
           />
         </>
       )}
 
-      {/* BEFORE / AFTER big label above */}
-      <Html position={[0, bbox.topY + 4, 0]} center distanceFactor={20}>
-        <div className="flex flex-col items-center gap-1 select-none pointer-events-none">
-          <div
-            className="px-3 py-1 rounded text-[14px] font-bold tracking-[0.2em] border-2"
-            style={{
-              background: 'rgba(0,0,0,0.85)',
-              borderColor: accent,
-              color: accent,
-              boxShadow: `0 0 16px ${accent}40`,
-            }}
-          >
-            {label}
-          </div>
-          {sublabel && (
-            <div className="text-[11px] text-gray-300 bg-black/70 px-2 py-0.5 rounded border border-white/10 whitespace-nowrap">
-              {sublabel}
-            </div>
-          )}
-        </div>
-      </Html>
+      {/* Dashed connector from marker on scan to callout tooth */}
+      <Line
+        points={[markerPos, [calloutPos[0], calloutPos[1] + calloutSize[1] * 0.2, calloutPos[2]]]}
+        color={styling.markerColor}
+        lineWidth={1}
+        dashed
+        dashSize={0.35}
+        gapSize={0.25}
+        transparent
+        opacity={0.55}
+      />
 
-      {/* Stage badge floating to the side of the scan */}
-      {showOverlay && state && (
-        <Html position={[bbox.sizeX * 0.45, 0, 0]} center distanceFactor={18}>
-          <div
-            className="px-2 py-1 rounded text-[10px] font-semibold whitespace-nowrap border pointer-events-none select-none"
-            style={{
-              background: 'rgba(0,0,0,0.85)',
-              borderColor: styling.markerColor,
-              color: styling.markerColor,
-              boxShadow: `0 0 8px ${styling.markerColor}40`,
-            }}
-          >
-            {styling.label}
+      {/* Magnified tooth detail callout (right side) */}
+      <group position={calloutPos}>
+        <ToothOverlay
+          key={activeStateIndex}
+          state={activeState}
+          module={simulation?.module}
+          targetTeeth={simulation?.target_teeth}
+          toothNumber={simulation?.target_teeth?.[0]}
+          toothSize={calloutSize}
+        />
+
+        {/* "Tooth #X" label above the callout */}
+        <Html position={[0, calloutSize[1] * 0.7 + 1.5, 0]} center distanceFactor={18}>
+          <div className="flex flex-col items-center gap-1 select-none pointer-events-none">
+            <div className="text-[10px] tracking-[0.25em] text-gray-500 font-semibold">DETAIL</div>
+            <div className="px-2 py-0.5 rounded text-[11px] font-bold whitespace-nowrap border border-white/20 bg-black/80 text-white">
+              Tooth #{simulation?.target_teeth?.[0] || '—'}
+            </div>
+          </div>
+        </Html>
+
+        {/* Stage chip below the callout */}
+        {activeState && (
+          <Html position={[0, -calloutSize[1] * 0.7 - 1.2, 0]} center distanceFactor={18}>
+            <div
+              className="px-2 py-0.5 rounded text-[10px] font-semibold whitespace-nowrap border pointer-events-none select-none"
+              style={{
+                background: 'rgba(0,0,0,0.85)',
+                borderColor: styling.markerColor,
+                color: styling.markerColor,
+              }}
+            >
+              {styling.label}
+            </div>
+          </Html>
+        )}
+      </group>
+
+      {/* Top-of-scene timeline header */}
+      {activeState && (
+        <Html position={[0, bbox.topY + 4.5, 0]} center distanceFactor={22}>
+          <div className="flex flex-col items-center gap-1 select-none pointer-events-none">
+            <div className="text-[10px] tracking-[0.3em] text-gray-500 font-semibold">TREATMENT TIMELINE</div>
+            <div className="flex items-center gap-2 bg-black/85 px-3 py-1.5 rounded-lg border border-white/10">
+              {monthLabel && (
+                <span className="text-[14px] font-bold text-white">{monthLabel}</span>
+              )}
+              {monthLabel && detailLabel && (
+                <span className="w-1 h-1 rounded-full bg-gray-600" />
+              )}
+              {detailLabel && (
+                <span className="text-[12px] text-gray-300">{detailLabel}</span>
+              )}
+            </div>
           </div>
         </Html>
       )}

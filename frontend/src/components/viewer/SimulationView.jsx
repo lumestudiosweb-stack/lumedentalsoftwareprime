@@ -126,14 +126,18 @@ export default function SimulationView() {
         {/* Side Panel */}
         <div className="w-64 bg-surface-1 border-l border-white/5 overflow-y-auto">
           <div className="p-4 border-b border-white/5">
-            <div className="text-[11px] text-gray-600 uppercase tracking-wider mb-1">Comparison</div>
-            <div className="flex items-center gap-2 mb-2">
-              <span className="px-2 py-0.5 rounded text-[10px] font-bold tracking-wider border-2 border-green-400 text-green-400">BEFORE</span>
-              <span className="text-gray-600 text-xs">vs</span>
-              <span className="px-2 py-0.5 rounded text-[10px] font-bold tracking-wider border-2 border-red-400 text-red-400">AFTER</span>
-            </div>
+            <div className="text-[11px] text-gray-600 uppercase tracking-wider mb-1">Treatment Timeline</div>
             <div className="text-sm font-display font-semibold text-white">{currentState?.label || 'No state selected'}</div>
-            <div className="text-[11px] text-gray-600 mt-1">State {activeState + 1} of {states.length} · Drag slider to project forward</div>
+            <div className="flex items-center gap-2 mt-2">
+              <div className="flex-1 h-1 bg-white/5 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-white rounded-full transition-all"
+                  style={{ width: `${((activeState + 1) / states.length) * 100}%` }}
+                />
+              </div>
+              <span className="text-[10px] text-gray-500 font-medium tabular-nums">{activeState + 1}/{states.length}</span>
+            </div>
+            <div className="text-[11px] text-gray-600 mt-2">Drag the slider to step through each milestone</div>
           </div>
 
           {currentState?.clinical_metrics && (
