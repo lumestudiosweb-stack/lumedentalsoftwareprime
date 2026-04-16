@@ -14,28 +14,32 @@ import ToothOverlay, { RealisticTooth } from './ToothOverlay';
  * down into the mouth — like a patient in the chair.
  */
 export default function DentalViewer({ scanUrl, scanFormat, simulation, activeStateIndex }) {
+  // Pull camera back further when showing the side-by-side scan view
+  const cameraConfig = scanUrl
+    ? { position: [0, 22, 70], fov: 38, near: 0.1, far: 1000 }
+    : { position: [0, 18, 38], fov: 32, near: 0.1, far: 1000 };
+
   return (
     <Canvas
-      camera={{ position: [0, 18, 38], fov: 32, near: 0.1, far: 1000 }}
-      gl={{ antialias: true, toneMapping: THREE.ACESFilmicToneMapping, toneMappingExposure: 1.2 }}
+      camera={cameraConfig}
+      gl={{ antialias: true, toneMapping: THREE.ACESFilmicToneMapping, toneMappingExposure: 1.1 }}
       shadows
       style={{ background: '#000' }}
     >
       <color attach="background" args={['#000000']} />
 
-      {/* Lighting — bright clinical with rim light */}
-      <ambientLight intensity={0.5} />
-      <directionalLight position={[10, 30, 20]} intensity={1.6} castShadow shadow-mapSize={[2048, 2048]} color="#fff" />
-      <directionalLight position={[-10, 20, -15]} intensity={0.6} color="#eef" />
-      <spotLight position={[0, 40, 5]} intensity={0.9} angle={0.5} penumbra={0.5} color="#fff" />
-      <pointLight position={[0, -10, 25]} intensity={0.4} color="#ffeedd" />
-      {/* Rim lights for depth */}
-      <pointLight position={[20, 5, -10]} intensity={0.3} color="#aaccff" />
-      <pointLight position={[-20, 5, -10]} intensity={0.3} color="#aaccff" />
+      {/* Lighting — clinical, dimmed slightly so emissive disease colors pop */}
+      <ambientLight intensity={0.35} />
+      <directionalLight position={[10, 30, 20]} intensity={1.2} castShadow shadow-mapSize={[2048, 2048]} color="#fff" />
+      <directionalLight position={[-10, 20, -15]} intensity={0.45} color="#eef" />
+      <spotLight position={[0, 40, 5]} intensity={0.7} angle={0.5} penumbra={0.5} color="#fff" />
+      <pointLight position={[0, -10, 25]} intensity={0.3} color="#ffeedd" />
+      <pointLight position={[20, 5, -10]} intensity={0.25} color="#aaccff" />
+      <pointLight position={[-20, 5, -10]} intensity={0.25} color="#aaccff" />
 
       <Suspense fallback={<LoadingIndicator />}>
         {scanUrl ? (
-          <ScanMesh url={scanUrl} format={scanFormat} simulation={simulation} activeStateIndex={activeStateIndex} />
+          <SplitScanView url={scanUrl} format={scanFormat} simulation={simulation} activeStateIndex={activeStateIndex} />
         ) : (
           <PlaceholderArch simulation={simulation} activeStateIndex={activeStateIndex} />
         )}
@@ -44,12 +48,12 @@ export default function DentalViewer({ scanUrl, scanFormat, simulation, activeSt
       <OrbitControls
         enableDamping
         dampingFactor={0.08}
-        minDistance={12}
-        maxDistance={100}
+        minDistance={15}
+        maxDistance={150}
         maxPolarAngle={Math.PI * 0.85}
         target={[0, 0, 0]}
       />
-      <Environment preset="studio" />
+      <Environment preset="studio" environmentIntensity={0.4} />
     </Canvas>
   );
 }
@@ -66,44 +70,51 @@ function getStageStyling(activeState) {
   const treatment = activeState?.clinical_metrics?.treatment;
   const pocket = activeState?.clinical_metrics?.pocket_depth_mm;
 
-  // Treatments take priority
+  // Treatments take priority — use strong blue/white tones
   if (treatment === 'zirconia_crown' || treatment === 'rct_crown' || stage === 'restored') {
-    return { color: '#e8f4ff', emissive: '#3a6fa8', emissiveIntensity: 0.18, label: 'Restored', markerColor: '#4a9eff' };
+    return { color: '#c8e8ff', emissive: '#1a6fff', emissiveIntensity: 2.5, label: 'Restored', markerColor: '#4a9eff', aura: '#2266ff' };
   }
   if (treatment === 'composite_filling') {
-    return { color: '#f4ede0', emissive: '#a88030', emissiveIntensity: 0.12, label: 'Filled', markerColor: '#d4a04a' };
+    return { color: '#f0d890', emissive: '#d49010', emissiveIntensity: 2.0, label: 'Filled', markerColor: '#d4a04a', aura: '#cc9020' };
   }
   if (treatment === 'root_canal' || stage === 'endodontic') {
-    return { color: '#e8e0d0', emissive: '#883322', emissiveIntensity: 0.18, label: 'Endo', markerColor: '#cc5544' };
+    return { color: '#c8a888', emissive: '#cc4422', emissiveIntensity: 2.2, label: 'Endo', markerColor: '#cc5544', aura: '#aa3322' };
   }
 
-  // Disease progression
+  // Disease progression — each stage significantly more severe
   switch (stage) {
     case 'enamel':
-      return { color: '#ebe3cf', emissive: '#8a6520', emissiveIntensity: 0.2, label: 'Enamel Lesion', markerColor: '#c89438' };
+      return { color: '#d8c870', emissive: '#a07820', emissiveIntensity: 1.8, label: 'Enamel Lesion', markerColor: '#d4a030', aura: '#c89030' };
     case 'dentin':
-      return { color: '#d8c8a8', emissive: '#6a3810', emissiveIntensity: 0.35, label: 'Dentin Caries', markerColor: '#8a4a18' };
+      return { color: '#c09060', emissive: '#884010', emissiveIntensity: 2.5, label: 'Dentin Caries', markerColor: '#a05020', aura: '#904018' };
     case 'pulp':
-      return { color: '#d0b090', emissive: '#aa1a1a', emissiveIntensity: 0.5, label: 'Pulpitis', markerColor: '#dd2222' };
+      return { color: '#c06040', emissive: '#dd1111', emissiveIntensity: 3.0, label: 'Pulpitis', markerColor: '#ff3333', aura: '#cc1111' };
     case 'abscess':
-      return { color: '#b89878', emissive: '#cc2200', emissiveIntensity: 0.7, label: 'Abscess', markerColor: '#ff3322' };
+      return { color: '#882020', emissive: '#ff1100', emissiveIntensity: 4.0, label: 'Abscess', markerColor: '#ff2200', aura: '#dd1100' };
     case 'extracted':
-      return { color: '#a08878', emissive: '#440000', emissiveIntensity: 0.25, label: 'Extracted', markerColor: '#882222' };
+      return { color: '#604040', emissive: '#660000', emissiveIntensity: 1.5, label: 'Extracted', markerColor: '#882222', aura: '#550000' };
     default:
       break;
   }
 
-  // Periodontal inflammation (no stage but high pocket depth)
+  // Periodontal inflammation
   if (typeof pocket === 'number' && pocket > 5) {
-    return { color: '#dab0a8', emissive: '#aa3322', emissiveIntensity: 0.3, label: 'Inflamed Gingiva', markerColor: '#cc4433' };
+    return { color: '#c07060', emissive: '#cc2211', emissiveIntensity: 2.0, label: 'Inflamed Gingiva', markerColor: '#dd3322', aura: '#bb2211' };
   }
 
-  // Healthy / baseline
-  return { color: '#f0ece4', emissive: '#000000', emissiveIntensity: 0, label: 'Healthy', markerColor: '#4ade80' };
+  // Healthy / baseline — no tint
+  return { color: '#f0ece4', emissive: '#000000', emissiveIntensity: 0, label: 'Healthy', markerColor: '#4ade80', aura: '#22cc44' };
 }
 
-function ScanMesh({ url, format, simulation, activeStateIndex }) {
-  const meshRef = useRef();
+/**
+ * SplitScanView — renders the same scan TWICE side by side.
+ *   LEFT  = "BEFORE" (always healthy, frozen at state 0)
+ *   RIGHT = "AFTER"  (driven by the timeline slider)
+ *
+ * This gives the patient a true side-by-side comparison of what
+ * their mouth looks like now vs. what will happen if untreated.
+ */
+function SplitScanView({ url, format, simulation, activeStateIndex }) {
   const [geometry, setGeometry] = useState(null);
   const [bbox, setBbox] = useState(null);
 
@@ -116,7 +127,7 @@ function ScanMesh({ url, format, simulation, activeStateIndex }) {
       const size = new THREE.Vector3();
       geo.boundingBox.getSize(size);
       const maxDim = Math.max(size.x, size.y, size.z);
-      const scale = 30 / maxDim;
+      const scale = 24 / maxDim; // smaller so two fit side by side
       geo.scale(scale, scale, scale);
       geo.computeBoundingBox();
       const finalSize = new THREE.Vector3();
@@ -132,83 +143,157 @@ function ScanMesh({ url, format, simulation, activeStateIndex }) {
     });
   }, [url, format]);
 
-  // Animate emissive pulse for active disease states
-  const matRef = useRef();
-  const activeState = simulation?.states?.[activeStateIndex];
-  const styling = useMemo(() => getStageStyling(activeState), [activeState]);
-  const isPulsing = ['pulp', 'abscess'].includes(activeState?.clinical_metrics?.stage);
-
-  // We re-create material props whenever the active state changes so React
-  // applies a brand new material — this is what makes the slider visibly
-  // recolor the scan in real time.
   if (!geometry || !bbox) return <LoadingIndicator />;
 
-  const calloutY = bbox.topY + 8;          // Floating tooth above scan
-  const calloutSize = [3.2, 4.2, 2.4];     // Big enough to read clearly
-  const markerY = bbox.topY - 0.5;         // Marker just below crown of scan
+  const baselineState = simulation?.states?.[0] || null;
+  const activeState = simulation?.states?.[activeStateIndex] || null;
+  const isAtBaseline = activeStateIndex === 0;
+
+  // Horizontal offset so the two scans don't overlap
+  const half = bbox.sizeX * 0.5;
+  const gap = 4;
+  const sideOffset = half + gap;
 
   return (
     <group>
-      {/* Scanned arch — tinted by current state */}
+      {/* ── LEFT: BEFORE ─────────────────────────── */}
+      <group position={[-sideOffset, 0, 0]}>
+        <ScanInstance
+          geometry={geometry}
+          bbox={bbox}
+          state={baselineState}
+          simulation={simulation}
+          label="BEFORE"
+          sublabel="Current State"
+          accent="#4ade80"
+        />
+      </group>
+
+      {/* ── Vertical divider line between the two ─ */}
+      <Line
+        points={[[0, -bbox.sizeY * 0.6, 0], [0, bbox.sizeY * 0.7, 0]]}
+        color="#ffffff"
+        lineWidth={1}
+        dashed
+        dashSize={0.6}
+        gapSize={0.4}
+        transparent
+        opacity={0.25}
+      />
+
+      {/* ── RIGHT: AFTER ─────────────────────────── */}
+      <group position={[sideOffset, 0, 0]}>
+        <ScanInstance
+          geometry={geometry}
+          bbox={bbox}
+          state={activeState}
+          simulation={simulation}
+          label={isAtBaseline ? 'AFTER' : `AFTER · ${stripMonthLabel(activeState?.label)}`}
+          sublabel={activeState?.label || ''}
+          accent={isAtBaseline ? '#4ade80' : getStageStyling(activeState).markerColor}
+          showOverlay
+        />
+      </group>
+    </group>
+  );
+}
+
+/** Pulls "3 Months" out of "3 Months — Enamel Demineralization" for compact labels */
+function stripMonthLabel(label) {
+  if (!label) return '';
+  const m = label.split('—')[0].trim();
+  return m || label;
+}
+
+/**
+ * One half of the split view — a single scan instance with its own
+ * material tint, marker, badge, and BEFORE/AFTER label.
+ */
+function ScanInstance({ geometry, bbox, state, simulation, label, sublabel, accent, showOverlay }) {
+  const meshRef = useRef();
+  const styling = useMemo(() => getStageStyling(state), [state]);
+  const stage = state?.clinical_metrics?.stage;
+  const isPulsing = showOverlay && ['pulp', 'abscess'].includes(stage);
+  const isHealthy = styling.label === 'Healthy';
+
+  // Imperatively drive the material every frame so prop-update edge cases
+  // don't leave the scan stuck on the old color.
+  useFrameImpl(({ clock }) => {
+    if (!meshRef.current) return;
+    const mat = meshRef.current.material;
+    mat.color.set(styling.color);
+    mat.emissive.set(styling.emissive);
+    let intensity = styling.emissiveIntensity;
+    if (isPulsing) {
+      intensity = styling.emissiveIntensity + Math.sin(clock.elapsedTime * 3) * 0.6;
+    }
+    mat.emissiveIntensity = Math.max(0, intensity);
+  });
+
+  const markerY = bbox.topY - 0.5;
+  const markerZ = bbox.frontZ * 0.6;
+
+  return (
+    <group>
+      {/* The scan itself */}
       <mesh ref={meshRef} geometry={geometry} castShadow receiveShadow>
         <meshPhysicalMaterial
-          ref={matRef}
           color={styling.color}
           emissive={styling.emissive}
           emissiveIntensity={styling.emissiveIntensity}
-          roughness={0.35}
+          roughness={0.4}
           metalness={0.05}
-          clearcoat={0.3}
-          clearcoatRoughness={0.2}
+          clearcoat={0.25}
+          clearcoatRoughness={0.25}
         />
       </mesh>
 
-      {/* Pulsing disease marker on the scan surface */}
-      {activeState && styling.label !== 'Healthy' && (
-        <PulseMarker position={[0, markerY, bbox.frontZ * 0.6]} color={styling.markerColor} pulse={isPulsing} />
-      )}
-
-      {/* Connecting line from scan up to floating callout tooth */}
-      {activeState && (
-        <ConnectorLine
-          from={[0, markerY, bbox.frontZ * 0.6]}
-          to={[0, calloutY - calloutSize[1] * 0.5, 0]}
-          color={styling.markerColor}
-        />
-      )}
-
-      {/* Floating "callout" tooth showing the disease/treatment in detail */}
-      {activeState && simulation && (
-        <group position={[0, calloutY, 0]}>
-          <ToothOverlay
-            state={activeState}
-            module={simulation.module}
-            targetTeeth={simulation.target_teeth}
-            toothNumber={simulation.target_teeth?.[0]}
-            toothSize={calloutSize}
+      {/* Disease marker — only on the AFTER side and only when not healthy */}
+      {showOverlay && !isHealthy && (
+        <>
+          <PulseMarker position={[0, markerY, markerZ]} color={styling.markerColor} pulse={isPulsing} />
+          {/* Big translucent "disease aura" so it's unmistakable */}
+          <DiseaseAura
+            position={[0, markerY - 0.5, markerZ - 0.5]}
+            radius={Math.min(bbox.sizeX, bbox.sizeY) * 0.18}
+            color={styling.aura || styling.markerColor}
+            pulse={isPulsing}
           />
-        </group>
+        </>
       )}
 
-      {/* State label — top of scene */}
-      {activeState?.label && (
-        <Html position={[0, calloutY + calloutSize[1] * 0.7 + 1.5, 0]} center>
-          <div className="bg-black/90 text-white px-4 py-2 rounded-lg text-xs font-medium whitespace-nowrap border border-white/10 flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full" style={{ background: styling.markerColor }} />
-            {activeState.label}
-          </div>
-        </Html>
-      )}
-
-      {/* Stage badge near marker */}
-      {activeState && (
-        <Html position={[bbox.sizeX * 0.55, markerY, bbox.frontZ * 0.6]} center>
+      {/* BEFORE / AFTER big label above */}
+      <Html position={[0, bbox.topY + 4, 0]} center distanceFactor={20}>
+        <div className="flex flex-col items-center gap-1 select-none pointer-events-none">
           <div
-            className="px-2 py-1 rounded text-[10px] font-semibold whitespace-nowrap border"
+            className="px-3 py-1 rounded text-[14px] font-bold tracking-[0.2em] border-2"
+            style={{
+              background: 'rgba(0,0,0,0.85)',
+              borderColor: accent,
+              color: accent,
+              boxShadow: `0 0 16px ${accent}40`,
+            }}
+          >
+            {label}
+          </div>
+          {sublabel && (
+            <div className="text-[11px] text-gray-300 bg-black/70 px-2 py-0.5 rounded border border-white/10 whitespace-nowrap">
+              {sublabel}
+            </div>
+          )}
+        </div>
+      </Html>
+
+      {/* Stage badge floating to the side of the scan */}
+      {showOverlay && state && (
+        <Html position={[bbox.sizeX * 0.45, 0, 0]} center distanceFactor={18}>
+          <div
+            className="px-2 py-1 rounded text-[10px] font-semibold whitespace-nowrap border pointer-events-none select-none"
             style={{
               background: 'rgba(0,0,0,0.85)',
               borderColor: styling.markerColor,
               color: styling.markerColor,
+              boxShadow: `0 0 8px ${styling.markerColor}40`,
             }}
           >
             {styling.label}
@@ -216,6 +301,27 @@ function ScanMesh({ url, format, simulation, activeStateIndex }) {
         </Html>
       )}
     </group>
+  );
+}
+
+/* ── Big translucent "aura" sphere highlighting the affected zone ── */
+
+function DiseaseAura({ position, radius, color, pulse }) {
+  const meshRef = useRef();
+  useFrameImpl(({ clock }) => {
+    if (!meshRef.current) return;
+    const t = clock.elapsedTime;
+    const baseOpacity = pulse ? 0.45 : 0.32;
+    meshRef.current.material.opacity = baseOpacity + Math.sin(t * (pulse ? 3 : 1.2)) * 0.12;
+    const baseScale = 1 + (pulse ? Math.sin(t * 3) * 0.08 : Math.sin(t * 1.2) * 0.04);
+    meshRef.current.scale.set(baseScale, baseScale, baseScale);
+  });
+
+  return (
+    <mesh ref={meshRef} position={position}>
+      <sphereGeometry args={[radius, 24, 24]} />
+      <meshBasicMaterial color={color} transparent opacity={0.4} depthWrite={false} />
+    </mesh>
   );
 }
 

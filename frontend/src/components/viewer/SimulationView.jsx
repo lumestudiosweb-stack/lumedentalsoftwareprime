@@ -126,9 +126,14 @@ export default function SimulationView() {
         {/* Side Panel */}
         <div className="w-64 bg-surface-1 border-l border-white/5 overflow-y-auto">
           <div className="p-4 border-b border-white/5">
-            <div className="text-[11px] text-gray-600 uppercase tracking-wider mb-1">Current View</div>
+            <div className="text-[11px] text-gray-600 uppercase tracking-wider mb-1">Comparison</div>
+            <div className="flex items-center gap-2 mb-2">
+              <span className="px-2 py-0.5 rounded text-[10px] font-bold tracking-wider border-2 border-green-400 text-green-400">BEFORE</span>
+              <span className="text-gray-600 text-xs">vs</span>
+              <span className="px-2 py-0.5 rounded text-[10px] font-bold tracking-wider border-2 border-red-400 text-red-400">AFTER</span>
+            </div>
             <div className="text-sm font-display font-semibold text-white">{currentState?.label || 'No state selected'}</div>
-            <div className="text-[11px] text-gray-600 mt-1">State {activeState + 1} of {states.length}</div>
+            <div className="text-[11px] text-gray-600 mt-1">State {activeState + 1} of {states.length} · Drag slider to project forward</div>
           </div>
 
           {currentState?.clinical_metrics && (
