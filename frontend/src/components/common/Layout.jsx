@@ -1,10 +1,13 @@
 import { Outlet, Link, useLocation } from 'react-router-dom';
 import { useAuthStore } from '../../contexts/authStore';
-import { LayoutDashboard, Users, MessageSquare, LogOut, Hexagon } from 'lucide-react';
+import { LayoutDashboard, Users, MessageSquare, LogOut, Hexagon, Calendar, TrendingUp, Brain } from 'lucide-react';
 
 const NAV_ITEMS = [
   { path: '/', label: 'Dashboard', icon: LayoutDashboard },
   { path: '/patients', label: 'Patients', icon: Users },
+  { path: '/schedule', label: 'Schedule', icon: Calendar },
+  { path: '/insights', label: 'AI Insights', icon: Brain },
+  { path: '/analytics', label: 'Analytics', icon: TrendingUp },
   { path: '/crm', label: 'Clinical CRM', icon: MessageSquare },
 ];
 

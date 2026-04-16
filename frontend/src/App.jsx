@@ -6,6 +6,9 @@ import PatientProfile from './components/dashboard/PatientProfile';
 import SimulationView from './components/viewer/SimulationView';
 import CrmDashboard from './components/crm/CrmDashboard';
 import AlignerTracker from './components/crm/AlignerTracker';
+import Scheduler from './components/schedule/Scheduler';
+import Analytics from './components/analytics/Analytics';
+import AiInsights from './components/insights/AiInsights';
 import Login from './components/common/Login';
 import { useAuthStore } from './contexts/authStore';
 
@@ -28,6 +31,9 @@ export default function App() {
         <Route path="/patients" element={<PatientList />} />
         <Route path="/patients/:id" element={<PatientProfile />} />
         <Route path="/simulation/:id" element={<SimulationView />} />
+        <Route path="/schedule" element={<Scheduler />} />
+        <Route path="/analytics" element={<Analytics />} />
+        <Route path="/insights" element={<AiInsights />} />
         <Route path="/crm" element={<CrmDashboard />} />
         <Route path="/aligners/:patientId" element={<AlignerTracker />} />
       </Route>
