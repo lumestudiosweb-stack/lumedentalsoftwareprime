@@ -259,16 +259,32 @@ export default function ScanPreview3D({ scanUrl, scanFormat, className='' }) {
 
   const handleColorUpload = useCallback((e) => applyColorFile(e.target.files?.[0]), [applyColorFile]);
 
-  const onDrop = useCallback((e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragOver(false);
-    const file = e.dataTransfer?.files?.[0];
-    applyColorFile(file);
+  // Use window-level drag detection so the overlay activates before the mouse
+  // enters the canvas (which swallows pointer events)
+  useEffect(() => {
+    const onWindowDragOver = (e) => { e.preventDefault(); setDragOver(true); };
+    const onWindowDragLeave = (e) => {
+      // Only clear if leaving the browser window entirely
+      if (e.clientX === 0 && e.clientY === 0) setDragOver(false);
+    };
+    const onWindowDrop = (e) => {
+      e.preventDefault();
+      setDragOver(false);
+      applyColorFile(e.dataTransfer?.files?.[0]);
+    };
+    window.addEventListener('dragover',  onWindowDragOver);
+    window.addEventListener('dragleave', onWindowDragLeave);
+    window.addEventListener('drop',      onWindowDrop);
+    return () => {
+      window.removeEventListener('dragover',  onWindowDragOver);
+      window.removeEventListener('dragleave', onWindowDragLeave);
+      window.removeEventListener('drop',      onWindowDrop);
+    };
   }, [applyColorFile]);
 
-  const onDragOver = useCallback((e) => { e.preventDefault(); setDragOver(true); }, []);
-  const onDragLeave = useCallback(() => setDragOver(false), []);
+  const onDrop     = useCallback((e)=>{ e.preventDefault(); setDragOver(false); applyColorFile(e.dataTransfer?.files?.[0]); }, [applyColorFile]);
+  const onDragOver  = useCallback((e)=>{ e.preventDefault(); setDragOver(true); }, []);
+  const onDragLeave = useCallback(()=>setDragOver(false), []);
 
   if (!scanUrl) return null;
 
@@ -276,9 +292,6 @@ export default function ScanPreview3D({ scanUrl, scanFormat, className='' }) {
     <div
       className={`relative flex flex-col ${className}`}
       style={{minHeight:0}}
-      onDrop={onDrop}
-      onDragOver={onDragOver}
-      onDragLeave={onDragLeave}
     >
       {/* Toolbar */}
       <div className="flex items-center gap-3 px-4 py-2 bg-black/50 border-b border-white/5 shrink-0">
@@ -304,8 +317,8 @@ export default function ScanPreview3D({ scanUrl, scanFormat, className='' }) {
         </span>
       </div>
 
-      {/* Canvas */}
-      <div className="flex-1" style={{minHeight:0}}>
+      {/* Canvas + drag-drop overlay wrapper */}
+      <div className="flex-1 relative" style={{minHeight:0}}>
         <Canvas camera={{position:[0,6,28],fov:42}}
           gl={{antialias:true,alpha:false}}
           style={{width:'100%',height:'100%'}}>
@@ -322,16 +335,34 @@ export default function ScanPreview3D({ scanUrl, scanFormat, className='' }) {
             <Environment preset="studio" />
           </Suspense>
         </Canvas>
-      </div>
 
-      {/* Drop overlay */}
-      {dragOver && (
-        <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-black/70 border-2 border-dashed border-lume-400 rounded-xl pointer-events-none">
-          <ImageIcon size={32} className="text-lume-400 mb-3" />
-          <p className="text-white font-semibold text-sm">Drop colour JPEG to apply</p>
-          <p className="text-gray-400 text-xs mt-1">Texture atlas from your scanner</p>
-        </div>
-      )}
+        {/* Invisible full-cover div that sits on top of the canvas and catches all drag events */}
+        <div
+          className="absolute inset-0 z-10"
+          style={{ pointerEvents: dragOver ? 'all' : 'none' }}
+          onDrop={onDrop}
+          onDragOver={onDragOver}
+          onDragLeave={onDragLeave}
+        />
+
+        {/* Invisible edge sensor — always active so we detect when user drags onto the viewer */}
+        <div
+          className="absolute inset-0 z-10"
+          style={{ pointerEvents: 'all', background: 'transparent' }}
+          onDragOver={onDragOver}
+          onDragLeave={onDragLeave}
+          onDrop={onDrop}
+        />
+
+        {/* Visual drop indicator */}
+        {dragOver && (
+          <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-black/75 border-2 border-dashed border-lume-400 rounded pointer-events-none">
+            <ImageIcon size={36} className="text-lume-400 mb-3" />
+            <p className="text-white font-semibold text-sm">Drop colour JPEG to apply</p>
+            <p className="text-gray-400 text-xs mt-1">Texture atlas from your scanner</p>
+          </div>
+        )}
+      </div>
 
       <div className="absolute bottom-2 left-3 text-[9px] text-gray-700 pointer-events-none">
         Drag · Rotate &nbsp;|&nbsp; Scroll · Zoom
