@@ -525,9 +525,8 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
 ─────────────────────────────────────────────────────────────────────── */
 function TreatmentOverlay({ position, normal, size, stage, treatment, pulsing }) {
   const groupRef = useRef();
-  const glowRef = useRef();
 
-  // Orient the overlay so it sits FLAT against the tooth surface
+  // Orient the overlay so +Y in local space points OUT of the tooth surface
   const quaternion = useMemo(() => {
     const q = new THREE.Quaternion();
     const up = new THREE.Vector3(0, 1, 0);
@@ -536,99 +535,114 @@ function TreatmentOverlay({ position, normal, size, stage, treatment, pulsing })
     return q;
   }, [normal]);
 
-  // Pulsing animation for active disease/treatment
-  useFrameImpl(({ clock }) => {
-    if (glowRef.current && pulsing) {
-      const pulse = 1 + Math.sin(clock.elapsedTime * 3) * 0.15;
-      glowRef.current.scale.set(pulse, pulse, pulse);
-      glowRef.current.material.opacity = 0.4 + Math.sin(clock.elapsedTime * 3) * 0.2;
-    }
-  });
-
-  // Push the overlay slightly OUT from the surface so it doesn't z-fight
+  // Sit the overlay flush against the surface
   const offset = useMemo(() => {
-    const n = new THREE.Vector3(...normal).normalize().multiplyScalar(size * 0.05);
+    const n = new THREE.Vector3(...normal).normalize().multiplyScalar(size * 0.01);
     return [position[0] + n.x, position[1] + n.y, position[2] + n.z];
   }, [position, normal, size]);
 
   return (
     <group ref={groupRef} position={offset} quaternion={quaternion}>
-      {/* Render the visual based on stage/treatment */}
-      <StageVisual stage={stage} treatment={treatment} size={size} />
-
-      {/* Soft glow halo for active disease */}
-      {(pulsing || ['pulp', 'abscess', 'dentin'].includes(stage)) && (
-        <mesh ref={glowRef} position={[0, 0, 0]}>
-          <sphereGeometry args={[size * 1.8, 24, 24]} />
-          <meshBasicMaterial
-            color={stage === 'abscess' ? '#ff2200' : stage === 'pulp' ? '#ff3333' : '#cc6622'}
-            transparent
-            opacity={0.35}
-            depthWrite={false}
-          />
-        </mesh>
-      )}
+      <StageVisual stage={stage} treatment={treatment} size={size} pulsing={pulsing} />
     </group>
   );
 }
 
-/* Per-stage anatomical visual — sits in local coords with +Y as the surface normal */
-function StageVisual({ stage, treatment, size }) {
-  // Treatments win
+/* ─────────────────────────────────────────────────────────────────────
+   Real cavity geometry: a concave bowl going INTO the tooth, with
+   stained edges on the outside surface — not a sphere on top.
+
+   Local axes (after quaternion):
+     +Y  = out of the tooth (toward camera)
+     −Y  = into the tooth (where the cavity drills)
+     XZ  = the tooth surface plane
+
+   Build pattern:
+     • Stain ring — flat disc on surface, brown→clear gradient
+     • Cavity rim — flat dark disc at surface level (the "opening")
+     • Cavity bowl — cone/bowl going INWARD (negative Y)
+     • Inner darkness — pitch black at the bottom of the bowl
+     • For pulp_exposure: a red glowing dot deep inside
+─────────────────────────────────────────────────────────────────────── */
+
+/* A flat brown-to-transparent stain ring sitting on the tooth surface */
+function StainRing({ inner, outer, color = '#7a4818', opacity = 0.85 }) {
+  return (
+    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.001, 0]}>
+      <ringGeometry args={[inner, outer, 32, 1]} />
+      <meshStandardMaterial
+        color={color}
+        roughness={0.95}
+        metalness={0}
+        transparent
+        opacity={opacity}
+        side={THREE.DoubleSide}
+        depthWrite={false}
+      />
+    </mesh>
+  );
+}
+
+/* The actual hole — cone/bowl going INTO the tooth */
+function CavityBowl({ radius, depth, color }) {
+  return (
+    <mesh rotation={[Math.PI, 0, 0]} position={[0, -depth * 0.5, 0]}>
+      {/* Cone with point downward (into tooth) and open ring upward (at surface) */}
+      <coneGeometry args={[radius, depth, 24, 1, true]} />
+      <meshStandardMaterial
+        color={color}
+        roughness={1}
+        metalness={0}
+        side={THREE.DoubleSide}
+      />
+    </mesh>
+  );
+}
+
+/* Per-stage anatomical visual */
+function StageVisual({ stage, treatment, size, pulsing }) {
+  const pulpRef = useRef();
+  useFrameImpl(({ clock }) => {
+    if (pulpRef.current && pulsing) {
+      const s = 1 + Math.sin(clock.elapsedTime * 3) * 0.18;
+      pulpRef.current.scale.set(s, s, s);
+    }
+  });
+
+  // ── TREATMENTS ────────────────────────────────────────────────
   if (treatment === 'metal_crown') {
-    // Full metal crown — silver/gold metallic dome
     return (
       <mesh position={[0, size * 0.4, 0]}>
         <sphereGeometry args={[size * 1.1, 24, 16, 0, Math.PI * 2, 0, Math.PI * 0.55]} />
-        <meshPhysicalMaterial
-          color="#c8ccd0"
-          metalness={0.85}
-          roughness={0.15}
-          clearcoat={1}
-          clearcoatRoughness={0.05}
-          reflectivity={0.95}
-        />
+        <meshPhysicalMaterial color="#c8ccd0" metalness={0.85} roughness={0.15} clearcoat={1} clearcoatRoughness={0.05} reflectivity={0.95} />
       </mesh>
     );
   }
   if (treatment === 'zirconia_crown' || treatment === 'all_ceramic_crown' || treatment === 'rct_crown' || stage === 'restored') {
-    // All-ceramic / zirconia crown — non-metallic, slight translucency, enamel-like
     return (
       <mesh position={[0, size * 0.4, 0]}>
         <sphereGeometry args={[size * 1.1, 24, 16, 0, Math.PI * 2, 0, Math.PI * 0.55]} />
-        <meshPhysicalMaterial
-          color="#f8f0e0"
-          metalness={0.0}
-          roughness={0.18}
-          clearcoat={1}
-          clearcoatRoughness={0.08}
-          reflectivity={0.55}
-          transmission={0.08}
-          ior={1.5}
-          thickness={0.3}
-          attenuationColor="#f0e8d0"
-          attenuationDistance={1.5}
-        />
+        <meshPhysicalMaterial color="#f8f0e0" metalness={0} roughness={0.18} clearcoat={1} clearcoatRoughness={0.08} reflectivity={0.55} transmission={0.08} ior={1.5} thickness={0.3} attenuationColor="#f0e8d0" attenuationDistance={1.5} />
       </mesh>
     );
   }
   if (treatment === 'composite_filling') {
-    // Smooth white composite filling — dome that fills the cavity
+    // Filling fills the cavity — flush smooth disc with subtle dome, tooth-colored
     return (
-      <mesh position={[0, size * 0.1, 0]}>
-        <sphereGeometry args={[size * 0.9, 20, 16, 0, Math.PI * 2, 0, Math.PI * 0.5]} />
-        <meshPhysicalMaterial
-          color="#f5ecd0"
-          metalness={0.05}
-          roughness={0.3}
-          clearcoat={0.6}
-          clearcoatRoughness={0.2}
-        />
-      </mesh>
+      <group>
+        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.005, 0]}>
+          <circleGeometry args={[size * 0.55, 32]} />
+          <meshPhysicalMaterial color="#f0e6d2" roughness={0.25} clearcoat={0.7} clearcoatRoughness={0.15} side={THREE.DoubleSide} />
+        </mesh>
+        {/* Margin line — slight darker rim showing the filling boundary */}
+        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.006, 0]}>
+          <ringGeometry args={[size * 0.5, size * 0.58, 32]} />
+          <meshStandardMaterial color="#9a8050" roughness={0.7} side={THREE.DoubleSide} />
+        </mesh>
+      </group>
     );
   }
   if (treatment === 'root_canal') {
-    // Rust-colored sealed cavity (gutta-percha visible)
     return (
       <mesh position={[0, size * 0.05, 0]}>
         <sphereGeometry args={[size * 0.85, 20, 16, 0, Math.PI * 2, 0, Math.PI * 0.5]} />
@@ -637,58 +651,91 @@ function StageVisual({ stage, treatment, size }) {
     );
   }
 
-  // Disease stages — progressive cavity
+  // ── DISEASE STAGES — real cavities, not domes ─────────────────
   switch (stage) {
-    case 'enamel':
-      // Small brown demineralization patch
-      return (
-        <mesh position={[0, size * 0.02, 0]}>
-          <sphereGeometry args={[size * 0.5, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.3]} />
-          <meshStandardMaterial color="#8b6f3a" roughness={0.85} />
-        </mesh>
-      );
-    case 'dentin':
-      // Bigger dark brown cavity
+    case 'enamel': {
+      // Incipient white-spot/early enamel lesion: brown stain only, no hole yet
+      const r = size * 0.55;
       return (
         <group>
-          <mesh position={[0, -size * 0.05, 0]}>
-            <sphereGeometry args={[size * 0.85, 18, 14, 0, Math.PI * 2, 0, Math.PI * 0.45]} />
-            <meshStandardMaterial color="#3d2814" roughness={0.95} />
-          </mesh>
-          <mesh position={[0, -size * 0.02, 0]}>
-            <sphereGeometry args={[size * 0.55, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.5]} />
-            <meshStandardMaterial color="#1a0f08" roughness={1} />
+          {/* Soft stain halo */}
+          <StainRing inner={r * 0.55} outer={r * 1.15} color="#9a7548" opacity={0.6} />
+          {/* Inner darker patch */}
+          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.002, 0]}>
+            <circleGeometry args={[r * 0.55, 24]} />
+            <meshStandardMaterial color="#7a5028" roughness={0.95} side={THREE.DoubleSide} transparent opacity={0.85} />
           </mesh>
         </group>
       );
-    case 'pulp':
-      // Black hole going deep with red pulp visible inside
+    }
+    case 'dentin': {
+      // Cavitated lesion into dentin — real hole, brown stained edges
+      const r = size * 0.5;
+      const depth = size * 0.7;
       return (
         <group>
-          <mesh position={[0, -size * 0.15, 0]}>
-            <sphereGeometry args={[size * 1.0, 20, 14, 0, Math.PI * 2, 0, Math.PI * 0.5]} />
-            <meshStandardMaterial color="#0a0503" roughness={1} />
+          {/* Outer brown stain fading from cavity edge */}
+          <StainRing inner={r * 0.95} outer={r * 1.6} color="#6a3a14" opacity={0.7} />
+          {/* Cavity opening — flat dark disc at surface */}
+          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.003, 0]}>
+            <circleGeometry args={[r * 0.95, 28]} />
+            <meshStandardMaterial color="#1f1106" roughness={1} side={THREE.DoubleSide} />
           </mesh>
-          <mesh position={[0, -size * 0.4, 0]}>
-            <sphereGeometry args={[size * 0.4, 16, 12]} />
-            <meshStandardMaterial color="#cc1111" emissive="#aa0000" emissiveIntensity={0.6} roughness={0.7} />
-          </mesh>
-        </group>
-      );
-    case 'abscess':
-      // Severe — large dark hole + swollen red inflammation
-      return (
-        <group>
-          <mesh position={[0, -size * 0.2, 0]}>
-            <sphereGeometry args={[size * 1.2, 20, 14, 0, Math.PI * 2, 0, Math.PI * 0.55]} />
+          {/* The hole going INTO the tooth */}
+          <CavityBowl radius={r * 0.9} depth={depth} color="#0a0502" />
+          {/* Dark dot at the very bottom */}
+          <mesh position={[0, -depth + 0.02, 0]}>
+            <sphereGeometry args={[r * 0.18, 12, 8]} />
             <meshStandardMaterial color="#000" roughness={1} />
           </mesh>
-          <mesh position={[0, size * 0.1, 0]}>
-            <sphereGeometry args={[size * 1.5, 24, 16, 0, Math.PI * 2, 0, Math.PI * 0.4]} />
-            <meshStandardMaterial color="#aa1a0a" emissive="#660000" emissiveIntensity={0.4} roughness={0.5} transparent opacity={0.7} />
+        </group>
+      );
+    }
+    case 'pulp': {
+      // Pulp exposure — deep cavity with red pulp visible at the bottom
+      const r = size * 0.6;
+      const depth = size * 1.2;
+      return (
+        <group>
+          {/* Inflamed gum-line stain */}
+          <StainRing inner={r * 1.0} outer={r * 1.8} color="#5a1808" opacity={0.75} />
+          {/* Cavity opening — pure black */}
+          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.003, 0]}>
+            <circleGeometry args={[r, 28]} />
+            <meshStandardMaterial color="#000" roughness={1} side={THREE.DoubleSide} />
+          </mesh>
+          {/* Deep cavity bowl */}
+          <CavityBowl radius={r * 0.95} depth={depth} color="#000" />
+          {/* Pulp exposed at the bottom — pulsing red glow */}
+          <mesh ref={pulpRef} position={[0, -depth + 0.05, 0]}>
+            <sphereGeometry args={[r * 0.32, 16, 12]} />
+            <meshStandardMaterial color="#cc1111" emissive="#cc0000" emissiveIntensity={1.0} roughness={0.7} />
           </mesh>
         </group>
       );
+    }
+    case 'abscess': {
+      // Severe — large hole + visible swelling on the gum
+      const r = size * 0.75;
+      const depth = size * 1.5;
+      return (
+        <group>
+          {/* Large angry red inflammation around the lesion */}
+          <StainRing inner={r * 1.0} outer={r * 2.2} color="#8a1a08" opacity={0.85} />
+          {/* Cavity opening */}
+          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.003, 0]}>
+            <circleGeometry args={[r, 28]} />
+            <meshStandardMaterial color="#000" roughness={1} side={THREE.DoubleSide} />
+          </mesh>
+          <CavityBowl radius={r * 0.95} depth={depth} color="#000" />
+          {/* Pus / abscess swelling — bulges OUT next to the cavity */}
+          <mesh ref={pulpRef} position={[r * 1.4, size * 0.15, 0]}>
+            <sphereGeometry args={[r * 0.55, 18, 14]} />
+            <meshStandardMaterial color="#cc4422" emissive="#882211" emissiveIntensity={0.5} roughness={0.6} />
+          </mesh>
+        </group>
+      );
+    }
     case 'extracted':
       // Empty socket — dark concave depression
       return (
