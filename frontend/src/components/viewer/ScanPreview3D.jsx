@@ -246,21 +246,40 @@ function ScanMesh({ url, format, textureUrl }) {
 export default function ScanPreview3D({ scanUrl, scanFormat, className='' }) {
   const [textureUrl,  setTextureUrl]  = useState(null);
   const [textureName, setTextureName] = useState(null);
+  const [dragOver,    setDragOver]    = useState(false);
   const colorInputRef = useRef(null);
 
-  const handleColorUpload = useCallback((e)=>{
-    const file = e.target.files?.[0];
+  const applyColorFile = useCallback((file) => {
     if (!file) return;
     const ext = file.name.split('.').pop().toLowerCase();
     if (!['jpg','jpeg','png','webp'].includes(ext)) return;
     setTextureName(file.name);
     setTextureUrl(URL.createObjectURL(file));
-  },[]);
+  }, []);
+
+  const handleColorUpload = useCallback((e) => applyColorFile(e.target.files?.[0]), [applyColorFile]);
+
+  const onDrop = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOver(false);
+    const file = e.dataTransfer?.files?.[0];
+    applyColorFile(file);
+  }, [applyColorFile]);
+
+  const onDragOver = useCallback((e) => { e.preventDefault(); setDragOver(true); }, []);
+  const onDragLeave = useCallback(() => setDragOver(false), []);
 
   if (!scanUrl) return null;
 
   return (
-    <div className={`relative flex flex-col ${className}`} style={{minHeight:0}}>
+    <div
+      className={`relative flex flex-col ${className}`}
+      style={{minHeight:0}}
+      onDrop={onDrop}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+    >
       {/* Toolbar */}
       <div className="flex items-center gap-3 px-4 py-2 bg-black/50 border-b border-white/5 shrink-0">
         <input ref={colorInputRef} type="file" accept=".jpg,.jpeg,.png,.webp"
@@ -272,7 +291,7 @@ export default function ScanPreview3D({ scanUrl, scanFormat, className='' }) {
               : 'border-white/10 text-gray-400 hover:text-white hover:bg-white/5'
           }`}>
           <ImageIcon size={12} />
-          {textureName ? `✓ ${textureName}` : 'Upload Colour File (JPEG / PNG)'}
+          {textureName ? `✓ ${textureName}` : 'Add Colour (click or drop JPEG here)'}
         </button>
         {textureUrl && (
           <button onClick={()=>{setTextureUrl(null);setTextureName(null);}}
@@ -281,7 +300,7 @@ export default function ScanPreview3D({ scanUrl, scanFormat, className='' }) {
           </button>
         )}
         <span className="ml-auto text-[10px] text-gray-600 italic">
-          {textureUrl ? 'Texture atlas applied' : 'Upload the colour JPEG from your scanner export folder'}
+          {textureUrl ? 'Texture atlas applied' : 'Drop the colour JPEG anywhere on the viewer'}
         </span>
       </div>
 
@@ -304,6 +323,15 @@ export default function ScanPreview3D({ scanUrl, scanFormat, className='' }) {
           </Suspense>
         </Canvas>
       </div>
+
+      {/* Drop overlay */}
+      {dragOver && (
+        <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-black/70 border-2 border-dashed border-lume-400 rounded-xl pointer-events-none">
+          <ImageIcon size={32} className="text-lume-400 mb-3" />
+          <p className="text-white font-semibold text-sm">Drop colour JPEG to apply</p>
+          <p className="text-gray-400 text-xs mt-1">Texture atlas from your scanner</p>
+        </div>
+      )}
 
       <div className="absolute bottom-2 left-3 text-[9px] text-gray-700 pointer-events-none">
         Drag · Rotate &nbsp;|&nbsp; Scroll · Zoom
