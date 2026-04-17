@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { simulationAPI, patientAPI, scanAPI } from '../../services/mockApi';
 import DentalViewer from './DentalViewer';
-import { ChevronLeft, ChevronRight, Loader2, ArrowLeft, Play, Pause, Upload } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Loader2, ArrowLeft, Play, Pause, Upload, Image as ImageIcon } from 'lucide-react';
 
 export default function SimulationView() {
   const { id } = useParams();
@@ -13,7 +13,9 @@ export default function SimulationView() {
   const [autoPlay, setAutoPlay] = useState(false);
   const [scanUrl, setScanUrl] = useState(null);
   const [scanFormat, setScanFormat] = useState('stl');
+  const [textureUrl, setTextureUrl] = useState(null);
   const fileInputRef = useRef(null);
+  const textureInputRef = useRef(null);
 
   useEffect(() => {
     async function load() {
@@ -50,6 +52,16 @@ export default function SimulationView() {
     const url = URL.createObjectURL(file);
     setScanUrl(url);
     setScanFormat(ext);
+  }, []);
+
+  // Color texture upload (JPEG/PNG) — wraps the mesh with realistic color
+  const handleTextureUpload = useCallback((e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const ext = file.name.split('.').pop().toLowerCase();
+    if (!['jpg', 'jpeg', 'png', 'webp'].includes(ext)) return;
+    const url = URL.createObjectURL(file);
+    setTextureUrl(url);
   }, []);
 
   useEffect(() => {
@@ -91,14 +103,25 @@ export default function SimulationView() {
             </div>
           </div>
           <div className="flex items-center gap-3">
-            {/* Upload STL/PLY button */}
+            {/* Upload mesh button */}
             <input ref={fileInputRef} type="file" accept=".stl,.ply,.obj" className="hidden" onChange={handleFileUpload} />
             <button onClick={() => fileInputRef.current?.click()}
               className={`flex items-center gap-1.5 text-[11px] px-3 py-1.5 rounded-lg border transition ${
                 scanUrl ? 'border-green-500/20 text-green-400 bg-green-500/5' : 'border-white/10 text-gray-400 hover:text-white hover:bg-white/5'
-              }`}>
+              }`}
+              title="OBJ recommended for color (STL has no UVs)">
               <Upload size={12} />
-              {scanUrl ? 'Scan Loaded' : 'Load STL/PLY'}
+              {scanUrl ? `Mesh · .${scanFormat}` : 'Load Mesh'}
+            </button>
+            {/* Upload color texture (JPEG/PNG) */}
+            <input ref={textureInputRef} type="file" accept=".jpg,.jpeg,.png,.webp" className="hidden" onChange={handleTextureUpload} />
+            <button onClick={() => textureInputRef.current?.click()}
+              className={`flex items-center gap-1.5 text-[11px] px-3 py-1.5 rounded-lg border transition ${
+                textureUrl ? 'border-pink-500/20 text-pink-400 bg-pink-500/5' : 'border-white/10 text-gray-400 hover:text-white hover:bg-white/5'
+              }`}
+              title="Color texture (JPEG/PNG) — requires OBJ mesh with UVs">
+              <ImageIcon size={12} />
+              {textureUrl ? 'Color Loaded' : 'Add Color (JPEG)'}
             </button>
             {simulation.target_teeth?.length > 0 && (
               <div className="flex items-center gap-1.5">
@@ -120,7 +143,7 @@ export default function SimulationView() {
       {/* 3D Viewer + Metrics Panel */}
       <div className="flex-1 flex relative">
         <div className="flex-1 bg-black">
-          <DentalViewer simulation={simulation} activeStateIndex={activeState} scanUrl={scanUrl} scanFormat={scanFormat} />
+          <DentalViewer simulation={simulation} activeStateIndex={activeState} scanUrl={scanUrl} scanFormat={scanFormat} textureUrl={textureUrl} />
         </div>
 
         {/* Side Panel */}

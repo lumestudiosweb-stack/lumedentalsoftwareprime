@@ -4,6 +4,7 @@ import { OrbitControls, Environment, Html, Center, Line } from '@react-three/dre
 import * as THREE from 'three';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
+import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import ToothOverlay, { RealisticTooth } from './ToothOverlay';
 
 /**
@@ -13,7 +14,7 @@ import ToothOverlay, { RealisticTooth } from './ToothOverlay';
  * Camera positioned for a front-facing clinical view looking slightly
  * down into the mouth — like a patient in the chair.
  */
-export default function DentalViewer({ scanUrl, scanFormat, simulation, activeStateIndex }) {
+export default function DentalViewer({ scanUrl, scanFormat, simulation, activeStateIndex, textureUrl }) {
   return (
     <Canvas
       camera={{ position: [0, 14, 42], fov: 34, near: 0.1, far: 1000 }}
@@ -34,7 +35,7 @@ export default function DentalViewer({ scanUrl, scanFormat, simulation, activeSt
 
       <Suspense fallback={<LoadingIndicator />}>
         {scanUrl ? (
-          <TreatmentJourney url={scanUrl} format={scanFormat} simulation={simulation} activeStateIndex={activeStateIndex} />
+          <TreatmentJourney url={scanUrl} format={scanFormat} textureUrl={textureUrl} simulation={simulation} activeStateIndex={activeStateIndex} />
         ) : (
           <PlaceholderArch simulation={simulation} activeStateIndex={activeStateIndex} />
         )}
@@ -114,21 +115,24 @@ function getStageStyling(activeState) {
  * This frames the slider as a treatment / projection journey rather
  * than a "before vs after" comparison.
  */
-function TreatmentJourney({ url, format, simulation, activeStateIndex }) {
+function TreatmentJourney({ url, format, textureUrl, simulation, activeStateIndex }) {
   const meshRef = useRef();
   const [geometry, setGeometry] = useState(null);
   const [bbox, setBbox] = useState(null);
+  const [hasUVs, setHasUVs] = useState(false);
+  const [hasVertexColors, setHasVertexColors] = useState(false);
+  const [texture, setTexture] = useState(null);
 
+  // ── Load mesh (STL / PLY / OBJ) ─────────────────────────────
   useEffect(() => {
-    const loader = format === 'ply' ? new PLYLoader() : new STLLoader();
-    loader.load(url, (geo) => {
-      geo.computeVertexNormals();
+    const finishGeo = (geo) => {
+      if (!geo.attributes.normal) geo.computeVertexNormals();
       geo.center();
       geo.computeBoundingBox();
       const size = new THREE.Vector3();
       geo.boundingBox.getSize(size);
       const maxDim = Math.max(size.x, size.y, size.z);
-      const scale = 22 / maxDim; // leave room for the side detail callout
+      const scale = 22 / maxDim;
       geo.scale(scale, scale, scale);
       geo.computeBoundingBox();
       const finalSize = new THREE.Vector3();
@@ -140,9 +144,42 @@ function TreatmentJourney({ url, format, simulation, activeStateIndex }) {
         topY: geo.boundingBox.max.y,
         frontZ: geo.boundingBox.max.z,
       });
+      setHasUVs(!!geo.attributes.uv);
+      setHasVertexColors(!!geo.attributes.color);
       setGeometry(geo);
-    });
+    };
+
+    if (format === 'obj') {
+      const loader = new OBJLoader();
+      loader.load(url, (group) => {
+        // OBJLoader returns a Group of Meshes — merge or take first
+        let merged = null;
+        group.traverse((child) => {
+          if (child.isMesh && !merged) merged = child.geometry;
+        });
+        if (merged) finishGeo(merged);
+      });
+    } else if (format === 'ply') {
+      new PLYLoader().load(url, finishGeo);
+    } else {
+      new STLLoader().load(url, finishGeo);
+    }
   }, [url, format]);
+
+  // ── Load color texture ──────────────────────────────────────
+  useEffect(() => {
+    if (!textureUrl) {
+      setTexture(null);
+      return;
+    }
+    const loader = new THREE.TextureLoader();
+    loader.load(textureUrl, (tex) => {
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.flipY = false; // OBJ files use bottom-left origin
+      tex.anisotropy = 8;
+      setTexture(tex);
+    });
+  }, [textureUrl]);
 
   const activeState = simulation?.states?.[activeStateIndex] || null;
   const styling = useMemo(() => getStageStyling(activeState), [activeState]);
@@ -150,17 +187,22 @@ function TreatmentJourney({ url, format, simulation, activeStateIndex }) {
   const isPulsing = ['pulp', 'abscess'].includes(stage);
   const isHealthy = styling.label === 'Healthy';
 
-  // Drive the material imperatively so the slider always recolors the scan,
-  // but with much SUBTLER intensity than before — we don't want the whole
-  // arch glowing red. The marker + callout do the heavy lifting visually.
+  // Has real color from a JPEG texture or PLY vertex colors?
+  const hasRealColor = !!texture || hasVertexColors;
+
+  // Drive the material imperatively so the slider always recolors the scan.
+  // When real color data is present, keep tint subtle so the photographic
+  // color shines through. The marker + callout do the visual storytelling.
   useFrameImpl(({ clock }) => {
     if (!meshRef.current) return;
     const mat = meshRef.current.material;
-    mat.color.set(styling.color);
+    if (!hasRealColor) {
+      mat.color.set(styling.color);
+    } else {
+      mat.color.set('#ffffff'); // let the texture/vertex colors come through unmodulated
+    }
     mat.emissive.set(styling.emissive);
-    // Scale intensity WAY down — the scan should look like a real scan,
-    // not a horror movie. Only the affected zone gets dramatic.
-    let intensity = styling.emissiveIntensity * 0.15;
+    let intensity = styling.emissiveIntensity * (hasRealColor ? 0.08 : 0.15);
     if (isPulsing) {
       intensity += Math.sin(clock.elapsedTime * 3) * 0.05;
     }
@@ -185,15 +227,26 @@ function TreatmentJourney({ url, format, simulation, activeStateIndex }) {
       {/* The patient's actual scan — kept looking like a scan */}
       <mesh ref={meshRef} geometry={geometry} castShadow receiveShadow>
         <meshPhysicalMaterial
-          color={styling.color}
+          color={hasRealColor ? '#ffffff' : styling.color}
+          map={texture && hasUVs ? texture : null}
+          vertexColors={hasVertexColors}
           emissive={styling.emissive}
-          emissiveIntensity={styling.emissiveIntensity * 0.15}
-          roughness={0.4}
-          metalness={0.05}
-          clearcoat={0.25}
-          clearcoatRoughness={0.25}
+          emissiveIntensity={styling.emissiveIntensity * (hasRealColor ? 0.08 : 0.15)}
+          roughness={hasRealColor ? 0.55 : 0.4}
+          metalness={0.04}
+          clearcoat={hasRealColor ? 0.15 : 0.25}
+          clearcoatRoughness={0.3}
         />
       </mesh>
+
+      {/* Helpful warning if user uploaded a texture but the mesh has no UVs */}
+      {texture && !hasUVs && !hasVertexColors && (
+        <Html position={[0, bbox.topY + 1.5, 0]} center distanceFactor={20}>
+          <div className="bg-amber-500/90 text-black text-[10px] font-bold px-3 py-1.5 rounded-md whitespace-nowrap pointer-events-none">
+            ⚠ Mesh has no UVs — re-export as OBJ to use this texture
+          </div>
+        </Html>
+      )}
 
       {/* Affected-zone marker on the scan */}
       {!isHealthy && (
