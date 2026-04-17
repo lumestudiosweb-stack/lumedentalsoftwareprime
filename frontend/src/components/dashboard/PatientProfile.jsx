@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { patientAPI, simulationAPI, scanAPI } from '../../services/mockApi';
-import { FileUp, Play, CheckCircle, Clock, Eye, Loader2, Upload, X, ChevronDown } from 'lucide-react';
+import { FileUp, Play, CheckCircle, Clock, Eye, Loader2, Upload, X, ChevronDown, Box } from 'lucide-react';
+import ScanPreview3D from '../viewer/ScanPreview3D';
 
 const SIMULATION_PRESETS = [
   { key: 'cavity_composite', label: 'Cavity \u2192 Composite Filling', description: 'Caries progression and composite restoration', promptTemplate: 'Simulate caries progression and composite filling on' },
@@ -34,6 +35,9 @@ export default function PatientProfile() {
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef(null);
+  const [previewUrl, setPreviewUrl] = useState(null);
+  const [previewFormat, setPreviewFormat] = useState('stl');
+  const [showPreview, setShowPreview] = useState(false);
 
   useEffect(() => {
     async function load() {
@@ -44,7 +48,14 @@ export default function PatientProfile() {
         ]);
         setProfile(profileRes.data);
         setSimulations(simsRes.data);
-        if (profileRes.data.scans?.length > 0) setSelectedScan(profileRes.data.scans[0].id);
+        if (profileRes.data.scans?.length > 0) {
+          const firstScan = profileRes.data.scans[0];
+          setSelectedScan(firstScan.id);
+          if (firstScan.storage_path?.startsWith('blob:')) {
+            setPreviewUrl(firstScan.storage_path);
+            setPreviewFormat(firstScan.file_format || 'stl');
+          }
+        }
       } catch {
         setProfile(null);
       } finally {
@@ -61,6 +72,11 @@ export default function PatientProfile() {
       alert('Please upload an STL, PLY, or OBJ file from your intraoral scanner.');
       return;
     }
+    // Immediately create a blob URL so we can preview before API returns
+    const blobUrl = URL.createObjectURL(file);
+    setPreviewUrl(blobUrl);
+    setPreviewFormat(ext);
+    setShowPreview(true);
     setUploading(true);
     try {
       const { data: newScan } = await scanAPI.upload(id, file);
@@ -165,11 +181,21 @@ export default function PatientProfile() {
           ) : (
             <div className="space-y-2 max-h-48 overflow-y-auto">
               {profile.scans?.map((s) => (
-                <div key={s.id} onClick={() => setSelectedScan(s.id)}
+                <div key={s.id} onClick={() => {
+                  setSelectedScan(s.id);
+                  if (s.storage_path?.startsWith('blob:')) {
+                    setPreviewUrl(s.storage_path);
+                    setPreviewFormat(s.file_format || 'stl');
+                    setShowPreview(true);
+                  }
+                }}
                   className={`text-sm p-3 rounded-lg cursor-pointer transition ${
                     selectedScan === s.id ? 'bg-white/10 border border-white/10' : 'bg-surface-3 hover:bg-surface-4'
                   }`}>
-                  <div className="font-medium text-white text-xs">{s.original_filename || `${s.scan_type} (${s.file_format.toUpperCase()})`}</div>
+                  <div className="flex items-center justify-between">
+                    <div className="font-medium text-white text-xs">{s.original_filename || `${s.scan_type} (${s.file_format.toUpperCase()})`}</div>
+                    {s.storage_path?.startsWith('blob:') && <Box size={10} className="text-lume-400 shrink-0" />}
+                  </div>
                   <div className="text-xs text-gray-600 mt-1">{new Date(s.scan_date).toLocaleDateString()}</div>
                   <span className={`text-xs px-1.5 py-0.5 rounded ${s.status === 'ready' ? 'bg-green-500/10 text-green-400' : 'bg-yellow-500/10 text-yellow-400'}`}>{s.status}</span>
                 </div>
@@ -198,6 +224,40 @@ export default function PatientProfile() {
           )}
         </div>
       </div>
+
+      {/* 3D Scan Preview Panel */}
+      {previewUrl && (
+        <div className="mt-4 bg-surface-1 border border-white/5 rounded-xl overflow-hidden">
+          <div className="flex items-center justify-between px-5 py-3 border-b border-white/5">
+            <div className="flex items-center gap-2">
+              <Box size={14} className="text-lume-400" />
+              <span className="text-sm font-display font-semibold text-white">3D Scan Preview</span>
+              <span className="text-[10px] text-gray-600 bg-white/5 px-2 py-0.5 rounded-full uppercase tracking-wide">{previewFormat}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setShowPreview(!showPreview)}
+                className="text-xs text-gray-500 hover:text-white transition px-3 py-1 rounded-lg border border-white/10 hover:bg-white/5"
+              >
+                {showPreview ? 'Hide' : 'Show'}
+              </button>
+              <button
+                onClick={() => { setPreviewUrl(null); setShowPreview(false); }}
+                className="text-gray-600 hover:text-white transition p-1"
+              >
+                <X size={14} />
+              </button>
+            </div>
+          </div>
+          {showPreview && (
+            <ScanPreview3D
+              scanUrl={previewUrl}
+              scanFormat={previewFormat}
+              className="h-80 w-full"
+            />
+          )}
+        </div>
+      )}
 
       {/* Previous Simulations */}
       {simulations.length > 0 && (
