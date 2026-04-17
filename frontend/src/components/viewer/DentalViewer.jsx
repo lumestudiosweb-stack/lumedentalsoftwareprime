@@ -346,6 +346,16 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
   // Drive the material imperatively so the slider always recolors the scan.
   // When real color data is present, keep tint subtle so the photographic
   // color shines through. The marker + callout do the visual storytelling.
+  // Imperatively attach the texture so the shader recompiles
+  // (R3F doesn't always trigger needsUpdate when map prop changes from null → Texture)
+  useEffect(() => {
+    if (!meshRef.current) return;
+    const mat = meshRef.current.material;
+    mat.map = texture || null;
+    mat.vertexColors = !texture && hasVertexColors;
+    mat.needsUpdate = true;
+  }, [texture, hasVertexColors]);
+
   useFrameImpl(({ clock }) => {
     if (!meshRef.current) return;
     const mat = meshRef.current.material;
