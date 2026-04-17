@@ -336,13 +336,31 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
 
   const activeState = simulation?.states?.[activeStateIndex] || null;
   const styling = useMemo(() => getStageStyling(activeState), [activeState]);
-  const stage = activeState?.clinical_metrics?.stage;
-  const treatment = activeState?.clinical_metrics?.treatment;
-  const isPulsing = ['pulp', 'abscess'].includes(stage);
-  const isHealthy = styling.label === 'Healthy';
+  const simStage = activeState?.clinical_metrics?.stage;
+  const simTreatment = activeState?.clinical_metrics?.treatment;
   const metrics = activeState?.clinical_metrics || {};
 
-  // Click-to-place treatment marker on the scan via raycasting
+  // ── Derive effective stage/treatment from clinical pathology (overrides sim) ──
+  const { effectiveStage, effectiveTreatment } = useMemo(() => {
+    if (!clinicalPathology?.kind) {
+      return { effectiveStage: simStage, effectiveTreatment: simTreatment };
+    }
+    const { kind, depth } = clinicalPathology;
+    const depthToStage = { incipient: 'enamel', enamel: 'enamel', dentin: 'dentin', deep_dentin: 'dentin', pulp_exposure: 'pulp' };
+    const kindToTreatment = {
+      composite_filling: 'composite_filling', amalgam: 'composite_filling',
+      inlay: 'composite_filling', sealant: 'composite_filling',
+      all_ceramic_crown: 'zirconia_crown', pfm_crown: 'zirconia_crown',
+      metal_crown: 'metal_crown', rct: 'root_canal', veneer: 'composite_filling',
+    };
+    if (kind === 'caries')    return { effectiveStage: depthToStage[depth] || 'dentin',    effectiveTreatment: null };
+    if (kind === 'extraction') return { effectiveStage: 'extracted', effectiveTreatment: null };
+    return { effectiveStage: 'restored', effectiveTreatment: kindToTreatment[kind] || 'composite_filling' };
+  }, [clinicalPathology, simStage, simTreatment]);
+
+  const isPulsing = ['pulp', 'abscess'].includes(effectiveStage);
+
+  // ── Click-to-place overlay ──
   const [markerPos, setMarkerPos] = useState(null);
   const [markerNormal, setMarkerNormal] = useState(null);
 
@@ -350,13 +368,33 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
     e.stopPropagation();
     if (e.face && e.point) {
       setMarkerPos([e.point.x, e.point.y, e.point.z]);
-      // Convert face normal from local to world
       const n = e.face.normal.clone().transformDirection(meshRef.current.matrixWorld).normalize();
       setMarkerNormal([n.x, n.y, n.z]);
     }
   };
 
-  // Imperatively set map + trigger shader recompile whenever texture changes
+  // ── Auto-place marker in the tooth zone when pathology is first set ──
+  useEffect(() => {
+    if (!clinicalPathology?.kind || !bbox) return;
+    if (markerPos) return; // already placed — don't move it
+    // Place in the upper-front portion of the scan (tooth zone)
+    const x = 0;
+    const y = bbox.topY * 0.72;
+    const z = bbox.frontZ * 0.6;
+    setMarkerPos([x, y, z]);
+    setMarkerNormal([0, 1, 0.3]); // roughly upward + slightly toward camera
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clinicalPathology?.kind]);
+
+  // ── Reset marker when pathology is cleared ──
+  useEffect(() => {
+    if (!clinicalPathology?.kind) {
+      setMarkerPos(null);
+      setMarkerNormal(null);
+    }
+  }, [clinicalPathology?.kind]);
+
+  // ── Texture imperatively applied ──
   useEffect(() => {
     if (!meshRef.current) return;
     const mat = meshRef.current.material;
@@ -372,16 +410,17 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
 
   if (!geometry || !bbox) return <LoadingIndicator />;
 
+  const meshDiag = Math.sqrt(bbox.sizeX**2 + bbox.sizeY**2 + bbox.sizeZ**2);
+  const overlaySize = meshDiag * 0.032; // slightly larger for visibility
+
   const monthLabel  = activeState?.label?.split('—')[0]?.trim() || '';
   const detailLabel = activeState?.label?.split('—')[1]?.trim() || activeState?.label || '';
 
-  // Estimate tooth size for visual overlays (~3% of mesh diagonal)
-  const meshDiag = Math.sqrt(bbox.sizeX**2 + bbox.sizeY**2 + bbox.sizeZ**2);
-  const overlaySize = meshDiag * 0.025;
+  const hasClinical = !!(clinicalPathology?.kind && pickedTooth);
 
   return (
     <group>
-      {/* The scan — real texture, zero color wash, clickable */}
+      {/* The scan mesh */}
       <mesh
         ref={meshRef}
         geometry={geometry}
@@ -404,36 +443,45 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
         />
       </mesh>
 
-      {/* Hints */}
-      {!texture && (
+      {/* Texture hint */}
+      {!texture && !hasClinical && (
         <Html position={[0, bbox.topY + 2.5, 0]} center distanceFactor={22}>
           <div className="bg-black/70 text-gray-400 text-[10px] px-3 py-1.5 rounded-md whitespace-nowrap pointer-events-none border border-white/10">
             Drop colour JPEG anywhere to apply texture
           </div>
         </Html>
       )}
-      {!markerPos && (
+
+      {/* Click hint — only when no clinical pathology is set */}
+      {!markerPos && !hasClinical && (
         <Html position={[0, bbox.topY + (texture ? 2.5 : 4), 0]} center distanceFactor={22}>
-          <div className="bg-lume-500 text-white text-[11px] font-semibold px-3 py-1.5 rounded-md whitespace-nowrap pointer-events-none shadow-lg" style={{ background: '#3b82f6' }}>
+          <div className="text-white text-[11px] font-semibold px-3 py-1.5 rounded-md whitespace-nowrap pointer-events-none shadow-lg" style={{ background: '#3b82f6' }}>
             👆 Click any tooth on the scan to place the treatment
           </div>
         </Html>
       )}
 
-      {/* The actual 3D TREATMENT OVERLAY at the clicked tooth */}
+      {/* Clinical pathology badge — top of scan, always visible when panel is filled */}
+      {hasClinical && (
+        <Html position={[0, bbox.topY + 3.5, 0]} center distanceFactor={22}>
+          <ClinicalBadge pathology={clinicalPathology} tooth={pickedTooth} onReset={() => { setMarkerPos(null); setMarkerNormal(null); }} />
+        </Html>
+      )}
+
+      {/* 3D treatment overlay — auto-placed or click-placed */}
       {markerPos && markerNormal && (
         <TreatmentOverlay
           position={markerPos}
           normal={markerNormal}
           size={overlaySize}
-          stage={stage}
-          treatment={treatment}
+          stage={effectiveStage}
+          treatment={effectiveTreatment}
           pulsing={isPulsing}
         />
       )}
 
-      {/* Clinical info card — floats to the right of the scan */}
-      {activeState && (
+      {/* Simulation timeline card — only when no clinical override */}
+      {activeState && !hasClinical && (
         <Html position={[bbox.sizeX * 0.55 + 1, 0, 0]} distanceFactor={20} style={{ width: 220 }}>
           <div className="pointer-events-none select-none" style={{ fontFamily: 'system-ui, sans-serif' }}>
             <div className="flex items-center gap-2 mb-2">
@@ -463,13 +511,6 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
               </button>
             )}
           </div>
-        </Html>
-      )}
-
-      {/* Clinical pathology card — shown when dentist has filled in the Clinical Tools panel */}
-      {clinicalPathology?.kind && pickedTooth && (
-        <Html position={[-(bbox.sizeX * 0.55 + 1), bbox.topY * 0.3, 0]} distanceFactor={20} style={{ width: 230 }}>
-          <PathologyCard pathology={clinicalPathology} tooth={pickedTooth} />
         </Html>
       )}
     </group>
@@ -927,6 +968,108 @@ function PlaceholderArch({ simulation, activeStateIndex, clinicalPathology, pick
         </Html>
       )}
     </group>
+  );
+}
+
+/* ── Clinical badge — always-visible overlay on the scan ──── */
+
+function ClinicalBadge({ pathology, tooth, onReset }) {
+  const { kind, depth, classification, surfaces } = pathology;
+
+  const depthColors = {
+    incipient: '#fbbf24', enamel: '#f59e0b',
+    dentin: '#d97706', deep_dentin: '#b45309', pulp_exposure: '#ef4444',
+  };
+  const kindLabels = {
+    caries: 'Caries (Cavity)', composite_filling: 'Composite Filling',
+    amalgam: 'Amalgam Filling', inlay: 'Inlay/Onlay',
+    all_ceramic_crown: 'All-Ceramic Crown', pfm_crown: 'PFM Crown',
+    metal_crown: 'Full Metal Crown', rct: 'Root Canal Treatment',
+    extraction: 'Extraction', sealant: 'Sealant', veneer: 'Veneer',
+  };
+
+  const isCaries = kind === 'caries';
+  const isRestoration = !isCaries && kind !== 'extraction';
+  const dotColor = isCaries ? (depthColors[depth] || '#f59e0b') : isRestoration ? '#4ade80' : '#f87171';
+  const borderColor = dotColor + '55';
+
+  return (
+    <div style={{
+      fontFamily: 'system-ui, sans-serif',
+      background: 'rgba(0,0,0,0.92)',
+      border: `1.5px solid ${borderColor}`,
+      borderRadius: 10,
+      padding: '10px 16px',
+      minWidth: 260,
+      boxShadow: `0 0 24px ${dotColor}33, 0 4px 20px rgba(0,0,0,0.6)`,
+      pointerEvents: 'none',
+      userSelect: 'none',
+    }}>
+      {/* Header row */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <div style={{
+          width: 11, height: 11, borderRadius: '50%',
+          background: dotColor,
+          boxShadow: `0 0 10px ${dotColor}`,
+          flexShrink: 0,
+          animation: isCaries && depth === 'pulp_exposure' ? 'pulse 1s ease-in-out infinite' : 'none',
+        }} />
+        <span style={{ fontSize: 14, fontWeight: 700, color: '#fff' }}>
+          Tooth #{tooth} — {kindLabels[kind] || kind}
+        </span>
+      </div>
+
+      {/* Classification + Surfaces row */}
+      {classification && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+          <span style={{ fontSize: 11, color: '#9ca3af' }}>
+            Class {classification}
+          </span>
+          {surfaces?.length > 0 && (
+            <div style={{ display: 'flex', gap: 4 }}>
+              {surfaces.map(s => (
+                <span key={s} style={{
+                  fontSize: 11, fontWeight: 700, color: '#f59e0b',
+                  background: 'rgba(245,158,11,0.15)',
+                  border: '1px solid rgba(245,158,11,0.4)',
+                  borderRadius: 4, padding: '1px 6px',
+                }}>
+                  {s}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Depth bar */}
+      {isCaries && depth && (
+        <div style={{ marginTop: 4 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+            <span style={{ fontSize: 10, color: '#6b7280' }}>Depth / Extent</span>
+            <span style={{ fontSize: 10, fontWeight: 600, color: dotColor, textTransform: 'capitalize' }}>
+              {depth.replace('_', ' ')}
+            </span>
+          </div>
+          {/* Visual depth progress bar */}
+          <div style={{ height: 5, background: 'rgba(255,255,255,0.08)', borderRadius: 3, overflow: 'hidden' }}>
+            <div style={{
+              height: '100%',
+              borderRadius: 3,
+              background: `linear-gradient(90deg, #fbbf24, ${dotColor})`,
+              width: { incipient: '12%', enamel: '30%', dentin: '55%', deep_dentin: '78%', pulp_exposure: '100%' }[depth] || '50%',
+              transition: 'width 0.4s ease',
+              boxShadow: `0 0 6px ${dotColor}`,
+            }} />
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 3 }}>
+            {['Incipient','Enamel','Dentin','Deep Dentin','Pulp'].map((l, i) => (
+              <span key={i} style={{ fontSize: 8, color: '#4b5563' }}>{l}</span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
