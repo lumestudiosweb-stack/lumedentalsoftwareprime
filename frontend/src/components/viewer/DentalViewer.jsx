@@ -373,19 +373,6 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
     }
   };
 
-  // ── Auto-place marker in the tooth zone when pathology is first set ──
-  useEffect(() => {
-    if (!clinicalPathology?.kind || !bbox) return;
-    if (markerPos) return; // already placed — don't move it
-    // Place in the upper-front portion of the scan (tooth zone)
-    const x = 0;
-    const y = bbox.topY * 0.72;
-    const z = bbox.frontZ * 0.6;
-    setMarkerPos([x, y, z]);
-    setMarkerNormal([0, 1, 0.3]); // roughly upward + slightly toward camera
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clinicalPathology?.kind]);
-
   // ── Reset marker when pathology is cleared ──
   useEffect(() => {
     if (!clinicalPathology?.kind) {
@@ -452,18 +439,23 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
         </Html>
       )}
 
-      {/* Click hint — only when no clinical pathology is set */}
-      {!markerPos && !hasClinical && (
+      {/* Click hint */}
+      {!markerPos && (
         <Html position={[0, bbox.topY + (texture ? 2.5 : 4), 0]} center distanceFactor={22}>
-          <div className="text-white text-[11px] font-semibold px-3 py-1.5 rounded-md whitespace-nowrap pointer-events-none shadow-lg" style={{ background: '#3b82f6' }}>
-            👆 Click any tooth on the scan to place the treatment
+          <div
+            className="text-white text-[11px] font-semibold px-3 py-1.5 rounded-md whitespace-nowrap pointer-events-none shadow-lg"
+            style={{ background: hasClinical ? '#f59e0b' : '#3b82f6', animation: hasClinical ? 'pulse 1.4s ease-in-out infinite' : 'none' }}
+          >
+            {hasClinical
+              ? `👆 Click tooth #${pickedTooth} on the scan to place the ${clinicalPathology.kind === 'caries' ? 'cavity' : 'treatment'}`
+              : '👆 Click any tooth on the scan to place a marker'}
           </div>
         </Html>
       )}
 
       {/* Clinical pathology badge — top of scan, always visible when panel is filled */}
       {hasClinical && (
-        <Html position={[0, bbox.topY + 3.5, 0]} center distanceFactor={22}>
+        <Html position={[0, bbox.topY + (markerPos ? 3.5 : 6.5), 0]} center distanceFactor={22}>
           <ClinicalBadge pathology={clinicalPathology} tooth={pickedTooth} onReset={() => { setMarkerPos(null); setMarkerNormal(null); }} />
         </Html>
       )}

@@ -566,6 +566,148 @@ function PathologyOverlay({ pathology, landmark, fdi, morphology }) {
 /* ──────────────────────────────────────────────────────────
    Tooth morphology
 ─────────────────────────────────────────────────────────── */
+/* Build a real molar crown — domed top with 4 cusps and a central fossa */
+function buildMolarCrownGeometry(w, h, d) {
+  const geo = new THREE.BoxGeometry(w, h, d, 16, 8, 16);
+  const pos = geo.attributes.position;
+  const halfH = h / 2;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const y = pos.getY(i);
+    const z = pos.getZ(i);
+    // Round corners (barrel-shape the box)
+    const r = Math.sqrt((x / (w / 2)) ** 2 + (z / (d / 2)) ** 2);
+    if (r > 0.001) {
+      const heightFactor = 1 - Math.pow(Math.abs(y) / halfH, 2) * 0.15;
+      pos.setX(i, x * heightFactor);
+      pos.setZ(i, z * heightFactor);
+    }
+    // Top of crown — sculpt 4 cusps + central fossa
+    if (y > halfH * 0.55) {
+      const localT = (y - halfH * 0.55) / (halfH * 0.45);
+      // Cusp pattern: four bumps at ±x/2, ±z/2
+      const cuspX = Math.cos((x / (w / 2)) * Math.PI);
+      const cuspZ = Math.cos((z / (d / 2)) * Math.PI);
+      const cuspBump = (cuspX + cuspZ) * 0.18;
+      // Central fossa — depression in the middle
+      const distFromCenter = Math.sqrt((x / (w / 2)) ** 2 + (z / (d / 2)) ** 2);
+      const fossa = Math.max(0, 1 - distFromCenter * 2.2) * -0.22;
+      // Mesial-distal groove
+      const groove = Math.exp(-Math.pow(z / (d * 0.06), 2)) * -0.08;
+      pos.setY(i, y + (cuspBump + fossa + groove) * h * localT);
+    }
+    // Bottom — taper toward cervical line
+    if (y < -halfH * 0.6) {
+      const taper = 0.92;
+      pos.setX(i, pos.getX(i) * taper);
+      pos.setZ(i, pos.getZ(i) * taper);
+    }
+  }
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/* Build an anterior incisor crown — flat blade with mamelons + incisal edge */
+function buildIncisorCrownGeometry(w, h, d) {
+  const geo = new THREE.BoxGeometry(w, h, d, 12, 10, 8);
+  const pos = geo.attributes.position;
+  const halfH = h / 2;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const y = pos.getY(i);
+    const z = pos.getZ(i);
+    // Curved labial face (front) and lingual concavity (back)
+    const yT = (y + halfH) / h; // 0 bottom → 1 top
+    if (z > 0) {
+      // Labial — gently convex outward
+      pos.setZ(i, z + Math.sin(yT * Math.PI) * 0.06);
+    } else {
+      // Lingual — concave (cingulum at cervical)
+      const cingulum = yT < 0.3 ? (0.3 - yT) * 0.35 : 0;
+      pos.setZ(i, z + Math.sin(yT * Math.PI) * 0.04 + cingulum);
+    }
+    // Incisal edge — slightly thinned with subtle mamelons
+    if (y > halfH * 0.7) {
+      const mamelon = Math.cos(x / (w / 2) * Math.PI * 1.5) * 0.04;
+      pos.setY(i, y + mamelon);
+      // Thin the incisal edge
+      const t = (y - halfH * 0.7) / (halfH * 0.3);
+      pos.setZ(i, pos.getZ(i) * (1 - t * 0.25));
+    }
+    // Cervical taper
+    if (y < -halfH * 0.5) {
+      pos.setX(i, x * 0.88);
+      pos.setZ(i, pos.getZ(i) * 0.92);
+    }
+  }
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/* Build a premolar crown — two cusps (buccal larger) */
+function buildPremolarCrownGeometry(w, h, d) {
+  const geo = new THREE.BoxGeometry(w, h, d, 12, 8, 12);
+  const pos = geo.attributes.position;
+  const halfH = h / 2;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const y = pos.getY(i);
+    const z = pos.getZ(i);
+    // Round the box
+    const r = Math.sqrt((x / (w / 2)) ** 2 + (z / (d / 2)) ** 2);
+    if (r > 0.001 && Math.abs(y) < halfH * 0.7) {
+      pos.setX(i, x * (1 - r * 0.05));
+      pos.setZ(i, z * (1 - r * 0.05));
+    }
+    if (y > halfH * 0.5) {
+      // Two cusps: buccal (+z) larger, lingual (-z) smaller
+      const localT = (y - halfH * 0.5) / (halfH * 0.5);
+      const buccalCusp = Math.exp(-Math.pow((z - d * 0.25) / (d * 0.25), 2)) * 0.28;
+      const lingualCusp = Math.exp(-Math.pow((z + d * 0.25) / (d * 0.25), 2)) * 0.20;
+      const groove = Math.exp(-Math.pow(z / (d * 0.07), 2)) * -0.15;
+      pos.setY(i, y + (buccalCusp + lingualCusp + groove) * h * localT);
+    }
+    if (y < -halfH * 0.6) {
+      pos.setX(i, pos.getX(i) * 0.9);
+      pos.setZ(i, pos.getZ(i) * 0.9);
+    }
+  }
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/* Build a canine crown — single pointed cusp tip */
+function buildCanineCrownGeometry(w, h, d) {
+  const geo = new THREE.BoxGeometry(w, h, d, 10, 12, 10);
+  const pos = geo.attributes.position;
+  const halfH = h / 2;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const y = pos.getY(i);
+    const z = pos.getZ(i);
+    // Round + taper toward a point at top
+    const yT = (y + halfH) / h;
+    if (y > 0) {
+      const taper = 1 - Math.pow(yT - 0.5, 2) * 1.4;
+      pos.setX(i, x * Math.max(0.2, taper));
+      pos.setZ(i, z * Math.max(0.2, taper));
+    }
+    // Cusp tip — sharp peak
+    if (y > halfH * 0.7) {
+      const localT = (y - halfH * 0.7) / (halfH * 0.3);
+      const distFromCenter = Math.sqrt(x * x + z * z) / (w / 2);
+      const tipBoost = Math.max(0, 1 - distFromCenter * 1.5) * 0.3;
+      pos.setY(i, y + tipBoost * localT);
+    }
+    if (y < -halfH * 0.6) {
+      pos.setX(i, pos.getX(i) * 0.9);
+      pos.setZ(i, pos.getZ(i) * 0.9);
+    }
+  }
+  geo.computeVertexNormals();
+  return geo;
+}
+
 function getToothMorphology(fdi) {
   const pos = fdi % 10;
   const isUpper = fdi < 30;
@@ -579,33 +721,38 @@ function getToothMorphology(fdi) {
   let rootLen = 1.6;
   let roots = [];
   let canals = [];
+  let crownBufferGeo;
 
   if (isMolar) {
-    crownH = 1.4;
-    crownGeo = <boxGeometry args={[1.7, crownH, 1.5]} />;
+    crownH = 1.5;
+    crownBufferGeo = buildMolarCrownGeometry(1.8, crownH, 1.6);
+    crownGeo = <primitive object={crownBufferGeo} attach="geometry" />;
     if (isUpper) {
-      roots  = [{ x: -0.5, y: -2.0, z:  0.4, topRadius: 0.35 }, { x: 0.5, y: -2.0, z: 0.4, topRadius: 0.35 }, { x: 0, y: -2.0, z: -0.5, topRadius: 0.35 }];
-      canals = [{ x: -0.5, y: -2.0, z:  0.4 }, { x: 0.5, y: -2.0, z: 0.4 }, { x: 0, y: -2.0, z: -0.5 }];
+      roots  = [{ x: -0.55, y: -2.0, z:  0.45, topRadius: 0.32 }, { x: 0.55, y: -2.0, z: 0.45, topRadius: 0.32 }, { x: 0, y: -2.0, z: -0.55, topRadius: 0.32 }];
+      canals = [{ x: -0.55, y: -2.0, z:  0.45 }, { x: 0.55, y: -2.0, z: 0.45 }, { x: 0, y: -2.0, z: -0.55 }];
     } else {
-      roots  = [{ x: -0.45, y: -2.0, z: 0, topRadius: 0.4 }, { x: 0.45, y: -2.0, z: 0, topRadius: 0.4 }];
-      canals = [{ x: -0.45, y: -2.0, z: 0 }, { x: 0.45, y: -2.0, z: 0 }];
+      roots  = [{ x: -0.5, y: -2.0, z: 0, topRadius: 0.38 }, { x: 0.5, y: -2.0, z: 0, topRadius: 0.38 }];
+      canals = [{ x: -0.5, y: -2.0, z: 0 }, { x: 0.5, y: -2.0, z: 0 }];
     }
   } else if (isPremolar) {
     crownH = 1.5;
-    crownGeo = <boxGeometry args={[1.2, crownH, 1.3]} />;
+    crownBufferGeo = buildPremolarCrownGeometry(1.25, crownH, 1.35);
+    crownGeo = <primitive object={crownBufferGeo} attach="geometry" />;
     roots  = [{ x: 0, y: -2.0, z: 0, topRadius: 0.4 }];
     canals = [{ x: 0, y: -2.0, z: 0 }];
   } else if (isCanine) {
-    crownH = 1.9;
-    crownGeo = <boxGeometry args={[0.9, crownH, 1.1]} />;
+    crownH = 1.95;
+    crownBufferGeo = buildCanineCrownGeometry(0.95, crownH, 1.15);
+    crownGeo = <primitive object={crownBufferGeo} attach="geometry" />;
     crownY = -0.2;
-    rootLen = 2.2;
-    roots  = [{ x: 0, y: -2.2, z: 0, topRadius: 0.4 }];
-    canals = [{ x: 0, y: -2.2, z: 0 }];
+    rootLen = 2.3;
+    roots  = [{ x: 0, y: -2.3, z: 0, topRadius: 0.42 }];
+    canals = [{ x: 0, y: -2.3, z: 0 }];
   } else {
-    crownH = 1.6;
-    crownGeo = <boxGeometry args={[0.95, crownH, 0.55]} />;
-    rootLen = 1.8;
+    crownH = 1.7;
+    crownBufferGeo = buildIncisorCrownGeometry(0.95, crownH, 0.6);
+    crownGeo = <primitive object={crownBufferGeo} attach="geometry" />;
+    rootLen = 1.9;
     roots  = [{ x: 0, y: -2.1, z: 0, topRadius: 0.35 }];
     canals = [{ x: 0, y: -2.1, z: 0 }];
   }
@@ -613,8 +760,8 @@ function getToothMorphology(fdi) {
   return {
     fdi, isUpper, isMolar, isPremolar, isCanine,
     crownGeo, crownH, crownY, rootLen, roots, canals,
-    halfX: isMolar ? 0.85 : isPremolar ? 0.6 : isCanine ? 0.45 : 0.475,
-    halfZ: isMolar ? 0.75 : isPremolar ? 0.65 : isCanine ? 0.55 : 0.275,
+    halfX: isMolar ? 0.9 : isPremolar ? 0.62 : isCanine ? 0.47 : 0.48,
+    halfZ: isMolar ? 0.8  : isPremolar ? 0.67 : isCanine ? 0.57 : 0.30,
   };
 }
 
