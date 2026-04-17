@@ -1,198 +1,219 @@
-import { Suspense, useRef, useEffect, useState } from 'react';
+import { Suspense, useRef, useEffect, useState, useCallback } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Environment } from '@react-three/drei';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
+import { MTLLoader } from 'three/examples/jsm/loaders/MTLLoader.js';
 import * as THREE from 'three';
-import { Loader2 } from 'lucide-react';
+import { ImageIcon, Loader2 } from 'lucide-react';
 
-/* ── Procedural dental coloring ─────────────────────────────────────────── */
-function applyProceduralDentalColors(geo) {
-  if (!geo.attributes.position) return;
-  if (!geo.attributes.normal) geo.computeVertexNormals();
+/* ── Mesh component ─────────────────────────────────────────────────────── */
+function ScanMesh({ url, format, textureUrl }) {
+  const groupRef  = useRef();
+  const meshRef   = useRef();
+  const [scene, setScene] = useState(null);   // for OBJ (Group)
+  const [geo,   setGeo]   = useState(null);   // for STL/PLY (BufferGeometry)
+  const [mat,   setMat]   = useState(null);
+  const [ready, setReady] = useState(false);
 
-  const positions = geo.attributes.position;
-  const normals   = geo.attributes.normal;
-  const count     = positions.count;
-
-  // Detect arch orientation
-  let upCount = 0, downCount = 0;
-  const step = Math.max(1, Math.floor(count / 2000));
-  for (let i = 0; i < count; i += step) {
-    const ny = normals.getY(i);
-    if (ny > 0.5) upCount++;
-    else if (ny < -0.5) downCount++;
-  }
-  const teethAtTop = upCount >= downCount; // upper arch → teeth face up
-
-  // Bounding box
-  geo.computeBoundingBox();
-  const bb = geo.boundingBox;
-  const rangeY = bb.max.y - bb.min.y;
-
-  // Palette
-  const enamel  = new THREE.Color('#f2e6c8'); // ivory/cream
-  const cervical= new THREE.Color('#d4a96a'); // cervical/CEJ area
-  const sulcus  = new THREE.Color('#8b3a4a'); // dark sulcus
-  const gum     = new THREE.Color('#c5566a'); // pink gingiva
-  const gumDeep = new THREE.Color('#a03050'); // deeper gum
-
-  const colors = new Float32Array(count * 3);
-
-  for (let i = 0; i < count; i++) {
-    const y    = positions.getY(i);
-    const ny   = normals.getY(i);
-
-    // tNorm: 0 = gum end, 1 = tooth tip
-    let tNorm = (y - bb.min.y) / rangeY;
-    if (!teethAtTop) tNorm = 1 - tNorm;
-
-    let color;
-    if (tNorm > 0.68) {
-      // Tooth tip — pure enamel
-      color = enamel.clone();
-    } else if (tNorm > 0.55) {
-      // Cervical enamel transitioning
-      const t = (tNorm - 0.55) / 0.13;
-      color = cervical.clone().lerp(enamel, t);
-    } else if (tNorm > 0.42) {
-      // Sulcus / gingival margin
-      const t = (tNorm - 0.42) / 0.13;
-      color = sulcus.clone().lerp(cervical, t);
-    } else if (tNorm > 0.22) {
-      // Free gingiva / attached gingiva
-      const t = (tNorm - 0.22) / 0.20;
-      color = gum.clone().lerp(sulcus, t);
-    } else {
-      // Deep gum / alveolar
-      const t = tNorm / 0.22;
-      color = gumDeep.clone().lerp(gum, t);
-    }
-
-    // Subtle normal-based shading for depth
-    const facingUp = teethAtTop ? ny : -ny;
-    if (tNorm > 0.55 && facingUp > 0.3) {
-      // Occlusal surface — slightly lighter
-      color.lerp(new THREE.Color('#fff8ee'), facingUp * 0.25);
-    }
-
-    colors[i * 3]     = color.r;
-    colors[i * 3 + 1] = color.g;
-    colors[i * 3 + 2] = color.b;
-  }
-
-  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-}
-
-/* ── Scan mesh loader ────────────────────────────────────────────────────── */
-function ScanMesh({ url, format }) {
-  const meshRef = useRef();
-  const [geo, setGeo] = useState(null);
-  const [hasVertexColors, setHasVertexColors] = useState(false);
-
+  /* ── Load geometry ── */
   useEffect(() => {
     if (!url) return;
     let cancelled = false;
-
-    const finishGeo = (g) => {
-      if (cancelled) return;
-      g.computeVertexNormals();
-      g.computeBoundingBox();
-
-      // Center geometry
-      const center = new THREE.Vector3();
-      g.boundingBox.getCenter(center);
-      g.translate(-center.x, -center.y, -center.z);
-
-      const native = g.attributes.color && g.attributes.color.count > 0;
-      if (!native) {
-        applyProceduralDentalColors(g);
-      }
-      setHasVertexColors(true);
-      setGeo(g);
-    };
+    setReady(false);
+    setGeo(null);
+    setScene(null);
 
     const fmt = (format || '').toLowerCase();
 
+    const prepareGeo = (g) => {
+      if (cancelled) return;
+      if (!g.attributes.normal || g.attributes.normal.count === 0)
+        g.computeVertexNormals();
+      g.computeBoundingBox();
+      // Center
+      const c = new THREE.Vector3();
+      g.boundingBox.getCenter(c);
+      g.translate(-c.x, -c.y, -c.z);
+      setGeo(g);
+      setReady(true);
+    };
+
     if (fmt === 'stl') {
-      new STLLoader().load(url, finishGeo);
+      new STLLoader().load(url, prepareGeo);
     } else if (fmt === 'ply') {
-      new PLYLoader().load(url, finishGeo);
+      new PLYLoader().load(url, prepareGeo);
     } else if (fmt === 'obj') {
       new OBJLoader().load(url, (obj) => {
-        let combined = null;
-        obj.traverse((child) => {
-          if (child.isMesh && !combined) combined = child.geometry.clone();
-        });
-        if (combined) finishGeo(combined);
+        if (cancelled) return;
+        // Center the group
+        const box = new THREE.Box3().setFromObject(obj);
+        const c = new THREE.Vector3();
+        box.getCenter(c);
+        obj.position.sub(c);
+        setScene(obj);
+        setReady(true);
       });
     }
 
     return () => { cancelled = true; };
   }, [url, format]);
 
-  // Auto-rotate gently
+  /* ── Build / update material whenever texture changes ── */
+  useEffect(() => {
+    const hasNativeColors = geo?.attributes?.color?.count > 0;
+
+    if (textureUrl) {
+      const loader = new THREE.TextureLoader();
+      loader.load(textureUrl, (tex) => {
+        tex.colorSpace = THREE.SRGBColorSpace;
+        tex.flipY = false;
+        setMat(new THREE.MeshStandardMaterial({
+          map: tex,
+          roughness: 0.45,
+          metalness: 0.04,
+          side: THREE.DoubleSide,
+        }));
+      });
+    } else {
+      setMat(new THREE.MeshStandardMaterial({
+        vertexColors: hasNativeColors,
+        // Neutral off-white when no color source
+        color: hasNativeColors ? undefined : '#e8dfd0',
+        roughness: 0.55,
+        metalness: 0.04,
+        side: THREE.DoubleSide,
+      }));
+    }
+  }, [geo, textureUrl]);
+
+  /* ── Apply material to OBJ children ── */
+  useEffect(() => {
+    if (!scene || !mat) return;
+    scene.traverse((child) => {
+      if (child.isMesh) child.material = mat;
+    });
+  }, [scene, mat]);
+
+  /* ── Gentle auto-rotate ── */
   useFrame((_, delta) => {
-    if (meshRef.current) meshRef.current.rotation.y += delta * 0.15;
+    if (groupRef.current) groupRef.current.rotation.y += delta * 0.18;
   });
 
-  if (!geo) return null;
+  if (!ready || !mat) return null;
 
-  // Scale to fit ~20 units
-  geo.computeBoundingBox();
-  const bb = geo.boundingBox;
-  const size = Math.max(
-    bb.max.x - bb.min.x,
-    bb.max.y - bb.min.y,
-    bb.max.z - bb.min.z
-  );
-  const scale = 20 / (size || 1);
+  // Compute scale to fill ~20 units
+  let scaleVal = 1;
+  if (geo) {
+    geo.computeBoundingBox();
+    const bb = geo.boundingBox;
+    const size = Math.max(bb.max.x-bb.min.x, bb.max.y-bb.min.y, bb.max.z-bb.min.z);
+    scaleVal = 20 / (size || 1);
+  } else if (scene) {
+    const bb = new THREE.Box3().setFromObject(scene);
+    const size = Math.max(
+      bb.max.x-bb.min.x,
+      bb.max.y-bb.min.y,
+      bb.max.z-bb.min.z
+    );
+    scaleVal = 20 / (size || 1);
+  }
 
   return (
-    <mesh ref={meshRef} geometry={geo} scale={[scale, scale, scale]}>
-      <meshStandardMaterial
-        vertexColors={hasVertexColors}
-        roughness={0.55}
-        metalness={0.05}
-        side={THREE.DoubleSide}
-      />
-    </mesh>
+    <group ref={groupRef} scale={[scaleVal, scaleVal, scaleVal]}>
+      {geo && (
+        <mesh ref={meshRef} geometry={geo} material={mat} />
+      )}
+      {scene && (
+        <primitive ref={meshRef} object={scene} />
+      )}
+    </group>
   );
 }
 
 /* ── Public component ────────────────────────────────────────────────────── */
 export default function ScanPreview3D({ scanUrl, scanFormat, className = '' }) {
+  const [textureUrl, setTextureUrl]   = useState(null);
+  const [textureName, setTextureName] = useState(null);
+  const colorInputRef = useRef(null);
+
+  const handleColorUpload = useCallback((e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const ext = file.name.split('.').pop().toLowerCase();
+    if (!['jpg','jpeg','png','webp'].includes(ext)) return;
+    setTextureName(file.name);
+    setTextureUrl(URL.createObjectURL(file));
+  }, []);
+
   if (!scanUrl) return null;
 
   return (
-    <div className={`relative rounded-xl overflow-hidden bg-[#0a0a0a] ${className}`}>
-      <Canvas
-        camera={{ position: [0, 8, 28], fov: 42 }}
-        gl={{ antialias: true, alpha: false }}
-      >
-        <color attach="background" args={['#0d0d0d']} />
-        <ambientLight intensity={1.1} />
-        <directionalLight position={[10, 20, 10]} intensity={2.2} castShadow />
-        <directionalLight position={[-8, 5, -10]} intensity={0.8} color="#ffd0b0" />
-        <pointLight position={[0, -15, 0]} intensity={0.5} color="#ff9999" />
+    <div className={`relative flex flex-col ${className}`}>
+      {/* Colour file toolbar */}
+      <div className="flex items-center gap-3 px-4 py-2 bg-black/40 border-b border-white/5">
+        <input
+          ref={colorInputRef}
+          type="file"
+          accept=".jpg,.jpeg,.png,.webp"
+          className="hidden"
+          onChange={handleColorUpload}
+        />
+        <button
+          onClick={() => colorInputRef.current?.click()}
+          className={`flex items-center gap-2 text-[11px] px-3 py-1.5 rounded-lg border transition ${
+            textureUrl
+              ? 'border-green-500/30 text-green-400 bg-green-500/5'
+              : 'border-white/10 text-gray-400 hover:text-white hover:bg-white/5'
+          }`}
+        >
+          <ImageIcon size={12} />
+          {textureName ? `Color: ${textureName}` : 'Upload Color File (JPEG / PNG)'}
+        </button>
+        {textureUrl && (
+          <button
+            onClick={() => { setTextureUrl(null); setTextureName(null); }}
+            className="text-[11px] text-gray-600 hover:text-red-400 transition"
+          >
+            Remove color
+          </button>
+        )}
+        <span className="ml-auto text-[10px] text-gray-700">
+          {textureUrl ? 'Texture applied' : 'No color — upload JPEG from scanner'}
+        </span>
+      </div>
 
-        <Suspense fallback={null}>
-          <ScanMesh url={scanUrl} format={scanFormat} />
-          <OrbitControls
-            enablePan={false}
-            minDistance={10}
-            maxDistance={50}
-            enableDamping
-            dampingFactor={0.08}
-          />
-          <Environment preset="studio" />
-        </Suspense>
-      </Canvas>
+      {/* Canvas */}
+      <div className="flex-1 min-h-0">
+        <Canvas
+          camera={{ position: [0, 8, 28], fov: 42 }}
+          gl={{ antialias: true, alpha: false }}
+          style={{ width: '100%', height: '100%' }}
+        >
+          <color attach="background" args={['#0d0d0d']} />
+          <ambientLight intensity={1.2} />
+          <directionalLight position={[10, 20, 10]} intensity={2.0} castShadow />
+          <directionalLight position={[-8, 5, -10]} intensity={0.9} color="#ffe0c0" />
+          <pointLight position={[0, -15, 0]} intensity={0.4} color="#ffaaaa" />
 
-      {/* Label */}
-      <div className="absolute top-2 left-3 text-[10px] text-gray-500 bg-black/50 px-2 py-0.5 rounded-full backdrop-blur-sm">
-        3D Preview · Drag to rotate
+          <Suspense fallback={null}>
+            <ScanMesh url={scanUrl} format={scanFormat} textureUrl={textureUrl} />
+            <OrbitControls
+              enablePan={false}
+              minDistance={8}
+              maxDistance={60}
+              enableDamping
+              dampingFactor={0.08}
+            />
+            <Environment preset="studio" />
+          </Suspense>
+        </Canvas>
+      </div>
+
+      {/* Corner label */}
+      <div className="absolute bottom-3 left-3 text-[10px] text-gray-600 pointer-events-none">
+        Drag to rotate · Scroll to zoom
       </div>
     </div>
   );

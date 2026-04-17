@@ -227,35 +227,25 @@ export default function PatientProfile() {
 
       {/* 3D Scan Preview Panel */}
       {previewUrl && (
-        <div className="mt-4 bg-surface-1 border border-white/5 rounded-xl overflow-hidden">
-          <div className="flex items-center justify-between px-5 py-3 border-b border-white/5">
+        <div className="mt-4 bg-surface-1 border border-white/5 rounded-xl overflow-hidden" style={{ height: '480px' }}>
+          <div className="flex items-center justify-between px-5 py-3 border-b border-white/5 shrink-0">
             <div className="flex items-center gap-2">
               <Box size={14} className="text-lume-400" />
               <span className="text-sm font-display font-semibold text-white">3D Scan Preview</span>
               <span className="text-[10px] text-gray-600 bg-white/5 px-2 py-0.5 rounded-full uppercase tracking-wide">{previewFormat}</span>
             </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setShowPreview(!showPreview)}
-                className="text-xs text-gray-500 hover:text-white transition px-3 py-1 rounded-lg border border-white/10 hover:bg-white/5"
-              >
-                {showPreview ? 'Hide' : 'Show'}
-              </button>
-              <button
-                onClick={() => { setPreviewUrl(null); setShowPreview(false); }}
-                className="text-gray-600 hover:text-white transition p-1"
-              >
-                <X size={14} />
-              </button>
-            </div>
+            <button
+              onClick={() => { setPreviewUrl(null); setShowPreview(false); }}
+              className="text-gray-600 hover:text-white transition p-1"
+            >
+              <X size={14} />
+            </button>
           </div>
-          {showPreview && (
-            <ScanPreview3D
-              scanUrl={previewUrl}
-              scanFormat={previewFormat}
-              className="h-80 w-full"
-            />
-          )}
+          <ScanPreview3D
+            scanUrl={previewUrl}
+            scanFormat={previewFormat}
+            className="h-full w-full"
+          />
         </div>
       )}
 
