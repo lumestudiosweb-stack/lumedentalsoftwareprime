@@ -339,151 +339,104 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
   const stage = activeState?.clinical_metrics?.stage;
   const isPulsing = ['pulp', 'abscess'].includes(stage);
   const isHealthy = styling.label === 'Healthy';
+  const metrics = activeState?.clinical_metrics || {};
 
-  // Has real color from a JPEG texture or PLY vertex colors?
-  const hasRealColor = !!texture || hasVertexColors;
-
-  // Drive the material imperatively so the slider always recolors the scan.
-  // When real color data is present, keep tint subtle so the photographic
-  // color shines through. The marker + callout do the visual storytelling.
-  // Imperatively attach the texture so the shader recompiles
-  // (R3F doesn't always trigger needsUpdate when map prop changes from null → Texture)
+  // Imperatively set map + trigger shader recompile whenever texture changes
   useEffect(() => {
     if (!meshRef.current) return;
     const mat = meshRef.current.material;
     mat.map = texture || null;
     mat.vertexColors = !texture && hasVertexColors;
+    mat.color.set('#ffffff');
+    mat.emissive.set('#000000');
+    mat.emissiveIntensity = 0;
     mat.needsUpdate = true;
   }, [texture, hasVertexColors]);
 
-  useFrameImpl(({ clock }) => {
-    if (!meshRef.current) return;
-    const mat = meshRef.current.material;
-    mat.color.set(texture ? '#ffffff' : hasVertexColors ? '#ffffff' : '#e8dfd0');
-    mat.emissive.set(styling.emissive);
-    let intensity = styling.emissiveIntensity * (hasRealColor ? 0.06 : 0.12);
-    if (isPulsing) intensity += Math.sin(clock.elapsedTime * 3) * 0.05;
-    mat.emissiveIntensity = Math.max(0, intensity);
-  });
+  // No per-frame color changes — just keep the scan looking real
+  useFrameImpl(() => {});
 
   if (!geometry || !bbox) return <LoadingIndicator />;
 
-  // Position the affected-zone marker on the scan surface
-  const markerPos = [0, bbox.topY - 0.5, bbox.frontZ * 0.55];
-
-  // Position the magnified detail callout to the RIGHT of the scan
-  const calloutPos = [bbox.sizeX * 0.55 + 6, 0, 0];
-  const calloutSize = [3.0, 4.0, 2.2];
-
-  // Shorthand month label for the callout header (e.g. "3 Months")
-  const monthLabel = activeState?.label?.split('—')[0]?.trim() || '';
+  const markerPos = [0, bbox.topY - 1, bbox.frontZ * 0.5];
+  const monthLabel  = activeState?.label?.split('—')[0]?.trim() || '';
   const detailLabel = activeState?.label?.split('—')[1]?.trim() || activeState?.label || '';
 
   return (
     <group>
-      {/* The patient's actual scan — kept looking like a scan */}
+      {/* The scan — real texture, zero color wash */}
       <mesh ref={meshRef} geometry={geometry} castShadow receiveShadow>
         <meshPhysicalMaterial
-          color={texture ? '#ffffff' : hasVertexColors ? '#ffffff' : '#e8dfd0'}
+          color="#ffffff"
           map={texture || null}
           vertexColors={!texture && hasVertexColors}
-          emissive={styling.emissive}
-          emissiveIntensity={styling.emissiveIntensity * (hasRealColor ? 0.06 : 0.12)}
-          roughness={texture ? 0.45 : 0.5}
+          emissive="#000000"
+          emissiveIntensity={0}
+          roughness={0.48}
           metalness={0.03}
           clearcoat={0.1}
           clearcoatRoughness={0.4}
         />
       </mesh>
 
-      {/* Hint when no texture is loaded */}
+      {/* Drop hint when no texture loaded */}
       {!texture && (
-        <Html position={[0, bbox.topY + 2, 0]} center distanceFactor={22}>
+        <Html position={[0, bbox.topY + 2.5, 0]} center distanceFactor={22}>
           <div className="bg-black/70 text-gray-400 text-[10px] px-3 py-1.5 rounded-md whitespace-nowrap pointer-events-none border border-white/10">
             Drop colour JPEG anywhere to apply texture
           </div>
         </Html>
       )}
 
-      {/* Affected-zone marker on the scan */}
+      {/* Pulsing dot marker showing WHERE the treatment is on the scan */}
       {!isHealthy && (
         <>
           <PulseMarker position={markerPos} color={styling.markerColor} pulse={isPulsing} />
           <DiseaseAura
-            position={[markerPos[0], markerPos[1] - 0.4, markerPos[2] - 0.4]}
-            radius={Math.min(bbox.sizeX, bbox.sizeY) * 0.14}
+            position={[markerPos[0], markerPos[1] - 0.3, markerPos[2] - 0.3]}
+            radius={Math.min(bbox.sizeX, bbox.sizeY) * 0.12}
             color={styling.aura || styling.markerColor}
             pulse={isPulsing}
           />
         </>
       )}
 
-      {/* Dashed connector from marker on scan to callout tooth */}
-      <Line
-        points={[markerPos, [calloutPos[0], calloutPos[1] + calloutSize[1] * 0.2, calloutPos[2]]]}
-        color={styling.markerColor}
-        lineWidth={1}
-        dashed
-        dashSize={0.35}
-        gapSize={0.25}
-        transparent
-        opacity={0.55}
-      />
-
-      {/* Magnified tooth detail callout (right side) */}
-      <group position={calloutPos}>
-        <ToothOverlay
-          key={activeStateIndex}
-          state={activeState}
-          module={simulation?.module}
-          targetTeeth={simulation?.target_teeth}
-          toothNumber={simulation?.target_teeth?.[0]}
-          toothSize={calloutSize}
-        />
-
-        {/* "Tooth #X" label above the callout */}
-        <Html position={[0, calloutSize[1] * 0.7 + 1.5, 0]} center distanceFactor={18}>
-          <div className="flex flex-col items-center gap-1 select-none pointer-events-none">
-            <div className="text-[10px] tracking-[0.25em] text-gray-500 font-semibold">DETAIL</div>
-            <div className="px-2 py-0.5 rounded text-[11px] font-bold whitespace-nowrap border border-white/20 bg-black/80 text-white">
-              Tooth #{simulation?.target_teeth?.[0] || '—'}
-            </div>
-          </div>
-        </Html>
-
-        {/* Stage chip below the callout */}
-        {activeState && (
-          <Html position={[0, -calloutSize[1] * 0.7 - 1.2, 0]} center distanceFactor={18}>
-            <div
-              className="px-2 py-0.5 rounded text-[10px] font-semibold whitespace-nowrap border pointer-events-none select-none"
-              style={{
-                background: 'rgba(0,0,0,0.85)',
-                borderColor: styling.markerColor,
-                color: styling.markerColor,
-              }}
-            >
-              {styling.label}
-            </div>
-          </Html>
-        )}
-      </group>
-
-      {/* Top-of-scene timeline header */}
+      {/* Clinical info card — floats to the right of the scan */}
       {activeState && (
-        <Html position={[0, bbox.topY + 4.5, 0]} center distanceFactor={22}>
-          <div className="flex flex-col items-center gap-1 select-none pointer-events-none">
-            <div className="text-[10px] tracking-[0.3em] text-gray-500 font-semibold">TREATMENT TIMELINE</div>
-            <div className="flex items-center gap-2 bg-black/85 px-3 py-1.5 rounded-lg border border-white/10">
-              {monthLabel && (
-                <span className="text-[14px] font-bold text-white">{monthLabel}</span>
-              )}
-              {monthLabel && detailLabel && (
-                <span className="w-1 h-1 rounded-full bg-gray-600" />
-              )}
-              {detailLabel && (
-                <span className="text-[12px] text-gray-300">{detailLabel}</span>
-              )}
+        <Html position={[bbox.sizeX * 0.55 + 1, 0, 0]} distanceFactor={20} style={{ width: 200 }}>
+          <div className="pointer-events-none select-none" style={{ fontFamily: 'system-ui, sans-serif' }}>
+            {/* Stage badge */}
+            <div className="flex items-center gap-2 mb-2">
+              <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: styling.markerColor, boxShadow: `0 0 6px ${styling.markerColor}` }} />
+              <span className="text-[12px] font-bold text-white">{styling.label}</span>
             </div>
+
+            {/* Timeline label */}
+            <div style={{ background: 'rgba(0,0,0,0.85)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, padding: '8px 12px', marginBottom: 8 }}>
+              {monthLabel && <div style={{ fontSize: 14, fontWeight: 700, color: '#fff' }}>{monthLabel}</div>}
+              {detailLabel && <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>{detailLabel}</div>}
+            </div>
+
+            {/* Clinical metrics */}
+            {Object.keys(metrics).length > 0 && (
+              <div style={{ background: 'rgba(0,0,0,0.85)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, padding: '8px 12px' }}>
+                {Object.entries(metrics).map(([k, v]) => (
+                  <div key={k} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                    <span style={{ fontSize: 10, color: '#6b7280', textTransform: 'capitalize' }}>{k.replace(/_/g, ' ')}</span>
+                    <span style={{ fontSize: 10, fontWeight: 600, color: '#e5e7eb', textTransform: 'capitalize' }}>{String(v).replace(/_/g, ' ')}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Tooth numbers */}
+            {simulation?.target_teeth?.length > 0 && (
+              <div style={{ display: 'flex', gap: 4, marginTop: 8, flexWrap: 'wrap' }}>
+                {simulation.target_teeth.map(t => (
+                  <span key={t} style={{ fontSize: 10, background: 'rgba(255,255,255,0.1)', color: '#fff', padding: '2px 8px', borderRadius: 999 }}>#{t}</span>
+                ))}
+              </div>
+            )}
           </div>
         </Html>
       )}
