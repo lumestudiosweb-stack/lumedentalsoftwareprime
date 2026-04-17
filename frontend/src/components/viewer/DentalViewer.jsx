@@ -337,9 +337,24 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
   const activeState = simulation?.states?.[activeStateIndex] || null;
   const styling = useMemo(() => getStageStyling(activeState), [activeState]);
   const stage = activeState?.clinical_metrics?.stage;
+  const treatment = activeState?.clinical_metrics?.treatment;
   const isPulsing = ['pulp', 'abscess'].includes(stage);
   const isHealthy = styling.label === 'Healthy';
   const metrics = activeState?.clinical_metrics || {};
+
+  // Click-to-place treatment marker on the scan via raycasting
+  const [markerPos, setMarkerPos] = useState(null);
+  const [markerNormal, setMarkerNormal] = useState(null);
+
+  const handleClickScan = (e) => {
+    e.stopPropagation();
+    if (e.face && e.point) {
+      setMarkerPos([e.point.x, e.point.y, e.point.z]);
+      // Convert face normal from local to world
+      const n = e.face.normal.clone().transformDirection(meshRef.current.matrixWorld).normalize();
+      setMarkerNormal([n.x, n.y, n.z]);
+    }
+  };
 
   // Imperatively set map + trigger shader recompile whenever texture changes
   useEffect(() => {
@@ -353,19 +368,29 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
     mat.needsUpdate = true;
   }, [texture, hasVertexColors]);
 
-  // No per-frame color changes — just keep the scan looking real
   useFrameImpl(() => {});
 
   if (!geometry || !bbox) return <LoadingIndicator />;
 
-  const markerPos = [0, bbox.topY - 1, bbox.frontZ * 0.5];
   const monthLabel  = activeState?.label?.split('—')[0]?.trim() || '';
   const detailLabel = activeState?.label?.split('—')[1]?.trim() || activeState?.label || '';
 
+  // Estimate tooth size for visual overlays (~3% of mesh diagonal)
+  const meshDiag = Math.sqrt(bbox.sizeX**2 + bbox.sizeY**2 + bbox.sizeZ**2);
+  const overlaySize = meshDiag * 0.025;
+
   return (
     <group>
-      {/* The scan — real texture, zero color wash */}
-      <mesh ref={meshRef} geometry={geometry} castShadow receiveShadow>
+      {/* The scan — real texture, zero color wash, clickable */}
+      <mesh
+        ref={meshRef}
+        geometry={geometry}
+        castShadow
+        receiveShadow
+        onClick={handleClickScan}
+        onPointerOver={(e) => { e.stopPropagation(); document.body.style.cursor = 'crosshair'; }}
+        onPointerOut={() => { document.body.style.cursor = 'auto'; }}
+      >
         <meshPhysicalMaterial
           color="#ffffff"
           map={texture || null}
@@ -379,7 +404,7 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
         />
       </mesh>
 
-      {/* Drop hint when no texture loaded */}
+      {/* Hints */}
       {!texture && (
         <Html position={[0, bbox.topY + 2.5, 0]} center distanceFactor={22}>
           <div className="bg-black/70 text-gray-400 text-[10px] px-3 py-1.5 rounded-md whitespace-nowrap pointer-events-none border border-white/10">
@@ -387,61 +412,239 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
           </div>
         </Html>
       )}
+      {!markerPos && (
+        <Html position={[0, bbox.topY + (texture ? 2.5 : 4), 0]} center distanceFactor={22}>
+          <div className="bg-lume-500 text-white text-[11px] font-semibold px-3 py-1.5 rounded-md whitespace-nowrap pointer-events-none shadow-lg" style={{ background: '#3b82f6' }}>
+            👆 Click any tooth on the scan to place the treatment
+          </div>
+        </Html>
+      )}
 
-      {/* Pulsing dot marker showing WHERE the treatment is on the scan */}
-      {!isHealthy && (
-        <>
-          <PulseMarker position={markerPos} color={styling.markerColor} pulse={isPulsing} />
-          <DiseaseAura
-            position={[markerPos[0], markerPos[1] - 0.3, markerPos[2] - 0.3]}
-            radius={Math.min(bbox.sizeX, bbox.sizeY) * 0.12}
-            color={styling.aura || styling.markerColor}
-            pulse={isPulsing}
-          />
-        </>
+      {/* The actual 3D TREATMENT OVERLAY at the clicked tooth */}
+      {markerPos && markerNormal && (
+        <TreatmentOverlay
+          position={markerPos}
+          normal={markerNormal}
+          size={overlaySize}
+          stage={stage}
+          treatment={treatment}
+          pulsing={isPulsing}
+        />
       )}
 
       {/* Clinical info card — floats to the right of the scan */}
       {activeState && (
-        <Html position={[bbox.sizeX * 0.55 + 1, 0, 0]} distanceFactor={20} style={{ width: 200 }}>
+        <Html position={[bbox.sizeX * 0.55 + 1, 0, 0]} distanceFactor={20} style={{ width: 220 }}>
           <div className="pointer-events-none select-none" style={{ fontFamily: 'system-ui, sans-serif' }}>
-            {/* Stage badge */}
             <div className="flex items-center gap-2 mb-2">
               <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: styling.markerColor, boxShadow: `0 0 6px ${styling.markerColor}` }} />
               <span className="text-[12px] font-bold text-white">{styling.label}</span>
             </div>
-
-            {/* Timeline label */}
-            <div style={{ background: 'rgba(0,0,0,0.85)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, padding: '8px 12px', marginBottom: 8 }}>
-              {monthLabel && <div style={{ fontSize: 14, fontWeight: 700, color: '#fff' }}>{monthLabel}</div>}
-              {detailLabel && <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>{detailLabel}</div>}
+            <div style={{ background: 'rgba(0,0,0,0.85)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, padding: '10px 12px', marginBottom: 8 }}>
+              {monthLabel && <div style={{ fontSize: 15, fontWeight: 700, color: '#fff' }}>{monthLabel}</div>}
+              {detailLabel && <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 3 }}>{detailLabel}</div>}
             </div>
-
-            {/* Clinical metrics */}
             {Object.keys(metrics).length > 0 && (
-              <div style={{ background: 'rgba(0,0,0,0.85)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, padding: '8px 12px' }}>
+              <div style={{ background: 'rgba(0,0,0,0.85)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, padding: '10px 12px' }}>
                 {Object.entries(metrics).map(([k, v]) => (
-                  <div key={k} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                  <div key={k} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 5 }}>
                     <span style={{ fontSize: 10, color: '#6b7280', textTransform: 'capitalize' }}>{k.replace(/_/g, ' ')}</span>
                     <span style={{ fontSize: 10, fontWeight: 600, color: '#e5e7eb', textTransform: 'capitalize' }}>{String(v).replace(/_/g, ' ')}</span>
                   </div>
                 ))}
               </div>
             )}
-
-            {/* Tooth numbers */}
-            {simulation?.target_teeth?.length > 0 && (
-              <div style={{ display: 'flex', gap: 4, marginTop: 8, flexWrap: 'wrap' }}>
-                {simulation.target_teeth.map(t => (
-                  <span key={t} style={{ fontSize: 10, background: 'rgba(255,255,255,0.1)', color: '#fff', padding: '2px 8px', borderRadius: 999 }}>#{t}</span>
-                ))}
-              </div>
+            {markerPos && (
+              <button
+                onClick={() => { setMarkerPos(null); setMarkerNormal(null); }}
+                style={{ pointerEvents: 'auto', marginTop: 8, fontSize: 10, color: '#9ca3af', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, padding: '4px 10px', cursor: 'pointer', width: '100%' }}
+              >
+                Reset · Pick a different tooth
+              </button>
             )}
           </div>
         </Html>
       )}
     </group>
   );
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+   TreatmentOverlay — actual 3D anatomical treatment that appears on the
+   tooth surface and morphs based on the current stage.
+
+   Stages:
+     • healthy     → nothing
+     • enamel      → small brown demineralization spot
+     • dentin      → bigger dark brown cavity (irregular shape)
+     • pulp        → black hole reaching down with red glow inside
+     • abscess     → dark hole + red inflamed aura
+     • restored / composite_filling → smooth white composite dome
+     • zirconia_crown / rct_crown   → shiny silver-white crown cap
+     • root_canal  → rust-colored sealed cavity
+─────────────────────────────────────────────────────────────────────── */
+function TreatmentOverlay({ position, normal, size, stage, treatment, pulsing }) {
+  const groupRef = useRef();
+  const glowRef = useRef();
+
+  // Orient the overlay so it sits FLAT against the tooth surface
+  const quaternion = useMemo(() => {
+    const q = new THREE.Quaternion();
+    const up = new THREE.Vector3(0, 1, 0);
+    const n = new THREE.Vector3(...normal).normalize();
+    q.setFromUnitVectors(up, n);
+    return q;
+  }, [normal]);
+
+  // Pulsing animation for active disease/treatment
+  useFrameImpl(({ clock }) => {
+    if (glowRef.current && pulsing) {
+      const pulse = 1 + Math.sin(clock.elapsedTime * 3) * 0.15;
+      glowRef.current.scale.set(pulse, pulse, pulse);
+      glowRef.current.material.opacity = 0.4 + Math.sin(clock.elapsedTime * 3) * 0.2;
+    }
+  });
+
+  // Push the overlay slightly OUT from the surface so it doesn't z-fight
+  const offset = useMemo(() => {
+    const n = new THREE.Vector3(...normal).normalize().multiplyScalar(size * 0.05);
+    return [position[0] + n.x, position[1] + n.y, position[2] + n.z];
+  }, [position, normal, size]);
+
+  return (
+    <group ref={groupRef} position={offset} quaternion={quaternion}>
+      {/* Render the visual based on stage/treatment */}
+      <StageVisual stage={stage} treatment={treatment} size={size} />
+
+      {/* Soft glow halo for active disease */}
+      {(pulsing || ['pulp', 'abscess', 'dentin'].includes(stage)) && (
+        <mesh ref={glowRef} position={[0, 0, 0]}>
+          <sphereGeometry args={[size * 1.8, 24, 24]} />
+          <meshBasicMaterial
+            color={stage === 'abscess' ? '#ff2200' : stage === 'pulp' ? '#ff3333' : '#cc6622'}
+            transparent
+            opacity={0.35}
+            depthWrite={false}
+          />
+        </mesh>
+      )}
+    </group>
+  );
+}
+
+/* Per-stage anatomical visual — sits in local coords with +Y as the surface normal */
+function StageVisual({ stage, treatment, size }) {
+  // Treatments win
+  if (treatment === 'zirconia_crown' || treatment === 'rct_crown' || stage === 'restored') {
+    // Shiny crown cap — silver-white metallic dome
+    return (
+      <mesh position={[0, size * 0.4, 0]}>
+        <sphereGeometry args={[size * 1.1, 24, 16, 0, Math.PI * 2, 0, Math.PI * 0.55]} />
+        <meshPhysicalMaterial
+          color="#e8eef5"
+          metalness={0.7}
+          roughness={0.15}
+          clearcoat={1}
+          clearcoatRoughness={0.05}
+          reflectivity={0.9}
+        />
+      </mesh>
+    );
+  }
+  if (treatment === 'composite_filling') {
+    // Smooth white composite filling — dome that fills the cavity
+    return (
+      <mesh position={[0, size * 0.1, 0]}>
+        <sphereGeometry args={[size * 0.9, 20, 16, 0, Math.PI * 2, 0, Math.PI * 0.5]} />
+        <meshPhysicalMaterial
+          color="#f5ecd0"
+          metalness={0.05}
+          roughness={0.3}
+          clearcoat={0.6}
+          clearcoatRoughness={0.2}
+        />
+      </mesh>
+    );
+  }
+  if (treatment === 'root_canal') {
+    // Rust-colored sealed cavity (gutta-percha visible)
+    return (
+      <mesh position={[0, size * 0.05, 0]}>
+        <sphereGeometry args={[size * 0.85, 20, 16, 0, Math.PI * 2, 0, Math.PI * 0.5]} />
+        <meshStandardMaterial color="#a86530" roughness={0.6} metalness={0.1} />
+      </mesh>
+    );
+  }
+
+  // Disease stages — progressive cavity
+  switch (stage) {
+    case 'enamel':
+      // Small brown demineralization patch
+      return (
+        <mesh position={[0, size * 0.02, 0]}>
+          <sphereGeometry args={[size * 0.5, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.3]} />
+          <meshStandardMaterial color="#8b6f3a" roughness={0.85} />
+        </mesh>
+      );
+    case 'dentin':
+      // Bigger dark brown cavity
+      return (
+        <group>
+          <mesh position={[0, -size * 0.05, 0]}>
+            <sphereGeometry args={[size * 0.85, 18, 14, 0, Math.PI * 2, 0, Math.PI * 0.45]} />
+            <meshStandardMaterial color="#3d2814" roughness={0.95} />
+          </mesh>
+          <mesh position={[0, -size * 0.02, 0]}>
+            <sphereGeometry args={[size * 0.55, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.5]} />
+            <meshStandardMaterial color="#1a0f08" roughness={1} />
+          </mesh>
+        </group>
+      );
+    case 'pulp':
+      // Black hole going deep with red pulp visible inside
+      return (
+        <group>
+          <mesh position={[0, -size * 0.15, 0]}>
+            <sphereGeometry args={[size * 1.0, 20, 14, 0, Math.PI * 2, 0, Math.PI * 0.5]} />
+            <meshStandardMaterial color="#0a0503" roughness={1} />
+          </mesh>
+          <mesh position={[0, -size * 0.4, 0]}>
+            <sphereGeometry args={[size * 0.4, 16, 12]} />
+            <meshStandardMaterial color="#cc1111" emissive="#aa0000" emissiveIntensity={0.6} roughness={0.7} />
+          </mesh>
+        </group>
+      );
+    case 'abscess':
+      // Severe — large dark hole + swollen red inflammation
+      return (
+        <group>
+          <mesh position={[0, -size * 0.2, 0]}>
+            <sphereGeometry args={[size * 1.2, 20, 14, 0, Math.PI * 2, 0, Math.PI * 0.55]} />
+            <meshStandardMaterial color="#000" roughness={1} />
+          </mesh>
+          <mesh position={[0, size * 0.1, 0]}>
+            <sphereGeometry args={[size * 1.5, 24, 16, 0, Math.PI * 2, 0, Math.PI * 0.4]} />
+            <meshStandardMaterial color="#aa1a0a" emissive="#660000" emissiveIntensity={0.4} roughness={0.5} transparent opacity={0.7} />
+          </mesh>
+        </group>
+      );
+    case 'extracted':
+      // Empty socket — dark concave depression
+      return (
+        <mesh position={[0, -size * 0.1, 0]} rotation={[Math.PI, 0, 0]}>
+          <sphereGeometry args={[size * 0.9, 20, 14, 0, Math.PI * 2, 0, Math.PI * 0.45]} />
+          <meshStandardMaterial color="#5a2020" roughness={0.9} />
+        </mesh>
+      );
+    default:
+      // Healthy — subtle ring marker so the user knows where they clicked
+      return (
+        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, size * 0.02, 0]}>
+          <ringGeometry args={[size * 0.5, size * 0.7, 32]} />
+          <meshBasicMaterial color="#4ade80" transparent opacity={0.6} side={THREE.DoubleSide} depthWrite={false} />
+        </mesh>
+      );
+  }
 }
 
 /* ── Big translucent "aura" sphere highlighting the affected zone ── */
