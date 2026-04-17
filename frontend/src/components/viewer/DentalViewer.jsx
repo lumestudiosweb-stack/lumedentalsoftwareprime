@@ -523,10 +523,29 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
      • zirconia_crown / rct_crown   → shiny silver-white crown cap
      • root_canal  → rust-colored sealed cavity
 ─────────────────────────────────────────────────────────────────────── */
+/**
+ * Clinical annotation marker on the scan — NOT a 3D ball.
+ *
+ * Why this design:
+ *   A patient scan is an unsegmented mesh — we don't know which polygons
+ *   belong to which tooth. Trying to render a "cavity" or "crown" as 3D
+ *   geometry on top of the scan produces fake-looking marbles glued to
+ *   teeth. That's how it looked before.
+ *
+ *   Real clinical software (Pearl, Overjet, Videa) annotates the scan
+ *   with 2D-style pins + labels and shows the realistic 3D pathology
+ *   in a SEPARATE anatomy panel. That's what this does.
+ *
+ * What renders:
+ *   - A flat colored ring on the surface (where the dentist clicked)
+ *   - A small pin sticking out toward the camera with the diagnosis
+ *   - An animated pulse ring that fades outward
+ */
 function TreatmentOverlay({ position, normal, size, stage, treatment, pulsing }) {
-  const groupRef = useRef();
+  const ringRef = useRef();
+  const pulseRef = useRef();
 
-  // Orient the overlay so +Y in local space points OUT of the tooth surface
+  // Orient: +Y in local space = surface normal
   const quaternion = useMemo(() => {
     const q = new THREE.Quaternion();
     const up = new THREE.Vector3(0, 1, 0);
@@ -535,301 +554,85 @@ function TreatmentOverlay({ position, normal, size, stage, treatment, pulsing })
     return q;
   }, [normal]);
 
-  // Sit the overlay flush against the surface
+  // Push very slightly off the surface to avoid z-fighting with the ring
   const offset = useMemo(() => {
-    const n = new THREE.Vector3(...normal).normalize().multiplyScalar(size * 0.01);
+    const n = new THREE.Vector3(...normal).normalize().multiplyScalar(size * 0.02);
     return [position[0] + n.x, position[1] + n.y, position[2] + n.z];
   }, [position, normal, size]);
 
+  // Color by clinical category
+  const accent = (() => {
+    if (treatment === 'metal_crown' || treatment === 'zirconia_crown' ||
+        treatment === 'all_ceramic_crown' || treatment === 'rct_crown' ||
+        stage === 'restored') return '#3b82f6';                // blue — restorative
+    if (treatment === 'composite_filling') return '#10b981';   // green — filling
+    if (treatment === 'root_canal') return '#f97316';          // orange — endo
+    if (stage === 'enamel') return '#fbbf24';                  // yellow
+    if (stage === 'dentin') return '#f97316';                  // orange
+    if (stage === 'pulp')   return '#ef4444';                  // red
+    if (stage === 'abscess') return '#dc2626';                 // dark red
+    if (stage === 'extracted') return '#6b7280';               // gray
+    return '#94a3b8';
+  })();
+
+  // Animated outer pulse ring
+  useFrameImpl(({ clock }) => {
+    if (pulseRef.current) {
+      const t = clock.elapsedTime;
+      const speed = pulsing ? 2.5 : 1.4;
+      const cycle = (t * speed) % 1;          // 0 → 1 repeating
+      const scale = 1 + cycle * 1.3;          // grows outward
+      pulseRef.current.scale.set(scale, scale, scale);
+      pulseRef.current.material.opacity = (1 - cycle) * 0.55;
+    }
+    if (ringRef.current && pulsing) {
+      const t = clock.elapsedTime;
+      ringRef.current.material.opacity = 0.85 + Math.sin(t * 3) * 0.15;
+    }
+  });
+
+  // Marker disc sized in mesh units — ~one tooth width
+  const ringInner = size * 0.55;
+  const ringOuter = size * 0.78;
+  const dotRadius = size * 0.18;
+
   return (
-    <group ref={groupRef} position={offset} quaternion={quaternion}>
-      <StageVisual stage={stage} treatment={treatment} size={size} pulsing={pulsing} />
-    </group>
-  );
-}
+    <group position={offset} quaternion={quaternion}>
+      {/* Solid filled dot at the center */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.001, 0]}>
+        <circleGeometry args={[dotRadius, 24]} />
+        <meshBasicMaterial color={accent} transparent opacity={0.92} side={THREE.DoubleSide} depthTest={false} />
+      </mesh>
 
-/* ─────────────────────────────────────────────────────────────────────
-   Real cavity geometry: a concave bowl going INTO the tooth, with
-   stained edges on the outside surface — not a sphere on top.
+      {/* Clean colored ring outline */}
+      <mesh ref={ringRef} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.002, 0]}>
+        <ringGeometry args={[ringInner, ringOuter, 48]} />
+        <meshBasicMaterial color={accent} transparent opacity={0.85} side={THREE.DoubleSide} depthTest={false} />
+      </mesh>
 
-   Local axes (after quaternion):
-     +Y  = out of the tooth (toward camera)
-     −Y  = into the tooth (where the cavity drills)
-     XZ  = the tooth surface plane
+      {/* Animated outer pulse — radiates out and fades */}
+      <mesh ref={pulseRef} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.0015, 0]}>
+        <ringGeometry args={[ringOuter, ringOuter * 1.15, 48]} />
+        <meshBasicMaterial color={accent} transparent opacity={0.5} side={THREE.DoubleSide} depthTest={false} />
+      </mesh>
 
-   Build pattern:
-     • Stain ring — flat disc on surface, brown→clear gradient
-     • Cavity rim — flat dark disc at surface level (the "opening")
-     • Cavity bowl — cone/bowl going INWARD (negative Y)
-     • Inner darkness — pitch black at the bottom of the bowl
-     • For pulp_exposure: a red glowing dot deep inside
-─────────────────────────────────────────────────────────────────────── */
-
-/* A flat brown-to-transparent stain ring sitting on the tooth surface */
-function StainRing({ inner, outer, color = '#7a4818', opacity = 0.85 }) {
-  return (
-    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.001, 0]}>
-      <ringGeometry args={[inner, outer, 32, 1]} />
-      <meshStandardMaterial
-        color={color}
-        roughness={0.95}
-        metalness={0}
+      {/* Crosshair lines through the dot — like clinical software */}
+      <Line
+        points={[[-ringOuter * 1.4, 0.003, 0], [ringOuter * 1.4, 0.003, 0]]}
+        color={accent}
+        lineWidth={1}
         transparent
-        opacity={opacity}
-        side={THREE.DoubleSide}
-        depthWrite={false}
+        opacity={0.45}
       />
-    </mesh>
-  );
-}
-
-/* The actual hole — cone/bowl going INTO the tooth */
-function CavityBowl({ radius, depth, color }) {
-  return (
-    <mesh rotation={[Math.PI, 0, 0]} position={[0, -depth * 0.5, 0]}>
-      {/* Cone with point downward (into tooth) and open ring upward (at surface) */}
-      <coneGeometry args={[radius, depth, 24, 1, true]} />
-      <meshStandardMaterial
-        color={color}
-        roughness={1}
-        metalness={0}
-        side={THREE.DoubleSide}
+      <Line
+        points={[[0, 0.003, -ringOuter * 1.4], [0, 0.003, ringOuter * 1.4]]}
+        color={accent}
+        lineWidth={1}
+        transparent
+        opacity={0.45}
       />
-    </mesh>
-  );
-}
-
-/* Per-stage anatomical visual */
-function StageVisual({ stage, treatment, size, pulsing }) {
-  const pulpRef = useRef();
-  useFrameImpl(({ clock }) => {
-    if (pulpRef.current && pulsing) {
-      const s = 1 + Math.sin(clock.elapsedTime * 3) * 0.18;
-      pulpRef.current.scale.set(s, s, s);
-    }
-  });
-
-  // ── TREATMENTS ────────────────────────────────────────────────
-  if (treatment === 'metal_crown') {
-    return (
-      <mesh position={[0, size * 0.4, 0]}>
-        <sphereGeometry args={[size * 1.1, 24, 16, 0, Math.PI * 2, 0, Math.PI * 0.55]} />
-        <meshPhysicalMaterial color="#c8ccd0" metalness={0.85} roughness={0.15} clearcoat={1} clearcoatRoughness={0.05} reflectivity={0.95} />
-      </mesh>
-    );
-  }
-  if (treatment === 'zirconia_crown' || treatment === 'all_ceramic_crown' || treatment === 'rct_crown' || stage === 'restored') {
-    return (
-      <mesh position={[0, size * 0.4, 0]}>
-        <sphereGeometry args={[size * 1.1, 24, 16, 0, Math.PI * 2, 0, Math.PI * 0.55]} />
-        <meshPhysicalMaterial color="#f8f0e0" metalness={0} roughness={0.18} clearcoat={1} clearcoatRoughness={0.08} reflectivity={0.55} transmission={0.08} ior={1.5} thickness={0.3} attenuationColor="#f0e8d0" attenuationDistance={1.5} />
-      </mesh>
-    );
-  }
-  if (treatment === 'composite_filling') {
-    // Filling fills the cavity — flush smooth disc with subtle dome, tooth-colored
-    return (
-      <group>
-        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.005, 0]}>
-          <circleGeometry args={[size * 0.55, 32]} />
-          <meshPhysicalMaterial color="#f0e6d2" roughness={0.25} clearcoat={0.7} clearcoatRoughness={0.15} side={THREE.DoubleSide} />
-        </mesh>
-        {/* Margin line — slight darker rim showing the filling boundary */}
-        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.006, 0]}>
-          <ringGeometry args={[size * 0.5, size * 0.58, 32]} />
-          <meshStandardMaterial color="#9a8050" roughness={0.7} side={THREE.DoubleSide} />
-        </mesh>
-      </group>
-    );
-  }
-  if (treatment === 'root_canal') {
-    return (
-      <mesh position={[0, size * 0.05, 0]}>
-        <sphereGeometry args={[size * 0.85, 20, 16, 0, Math.PI * 2, 0, Math.PI * 0.5]} />
-        <meshStandardMaterial color="#a86530" roughness={0.6} metalness={0.1} />
-      </mesh>
-    );
-  }
-
-  // ── DISEASE STAGES — real cavities, not domes ─────────────────
-  switch (stage) {
-    case 'enamel': {
-      // Incipient white-spot/early enamel lesion: brown stain only, no hole yet
-      const r = size * 0.55;
-      return (
-        <group>
-          {/* Soft stain halo */}
-          <StainRing inner={r * 0.55} outer={r * 1.15} color="#9a7548" opacity={0.6} />
-          {/* Inner darker patch */}
-          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.002, 0]}>
-            <circleGeometry args={[r * 0.55, 24]} />
-            <meshStandardMaterial color="#7a5028" roughness={0.95} side={THREE.DoubleSide} transparent opacity={0.85} />
-          </mesh>
-        </group>
-      );
-    }
-    case 'dentin': {
-      // Cavitated lesion into dentin — real hole, brown stained edges
-      const r = size * 0.5;
-      const depth = size * 0.7;
-      return (
-        <group>
-          {/* Outer brown stain fading from cavity edge */}
-          <StainRing inner={r * 0.95} outer={r * 1.6} color="#6a3a14" opacity={0.7} />
-          {/* Cavity opening — flat dark disc at surface */}
-          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.003, 0]}>
-            <circleGeometry args={[r * 0.95, 28]} />
-            <meshStandardMaterial color="#1f1106" roughness={1} side={THREE.DoubleSide} />
-          </mesh>
-          {/* The hole going INTO the tooth */}
-          <CavityBowl radius={r * 0.9} depth={depth} color="#0a0502" />
-          {/* Dark dot at the very bottom */}
-          <mesh position={[0, -depth + 0.02, 0]}>
-            <sphereGeometry args={[r * 0.18, 12, 8]} />
-            <meshStandardMaterial color="#000" roughness={1} />
-          </mesh>
-        </group>
-      );
-    }
-    case 'pulp': {
-      // Pulp exposure — deep cavity with red pulp visible at the bottom
-      const r = size * 0.6;
-      const depth = size * 1.2;
-      return (
-        <group>
-          {/* Inflamed gum-line stain */}
-          <StainRing inner={r * 1.0} outer={r * 1.8} color="#5a1808" opacity={0.75} />
-          {/* Cavity opening — pure black */}
-          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.003, 0]}>
-            <circleGeometry args={[r, 28]} />
-            <meshStandardMaterial color="#000" roughness={1} side={THREE.DoubleSide} />
-          </mesh>
-          {/* Deep cavity bowl */}
-          <CavityBowl radius={r * 0.95} depth={depth} color="#000" />
-          {/* Pulp exposed at the bottom — pulsing red glow */}
-          <mesh ref={pulpRef} position={[0, -depth + 0.05, 0]}>
-            <sphereGeometry args={[r * 0.32, 16, 12]} />
-            <meshStandardMaterial color="#cc1111" emissive="#cc0000" emissiveIntensity={1.0} roughness={0.7} />
-          </mesh>
-        </group>
-      );
-    }
-    case 'abscess': {
-      // Severe — large hole + visible swelling on the gum
-      const r = size * 0.75;
-      const depth = size * 1.5;
-      return (
-        <group>
-          {/* Large angry red inflammation around the lesion */}
-          <StainRing inner={r * 1.0} outer={r * 2.2} color="#8a1a08" opacity={0.85} />
-          {/* Cavity opening */}
-          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.003, 0]}>
-            <circleGeometry args={[r, 28]} />
-            <meshStandardMaterial color="#000" roughness={1} side={THREE.DoubleSide} />
-          </mesh>
-          <CavityBowl radius={r * 0.95} depth={depth} color="#000" />
-          {/* Pus / abscess swelling — bulges OUT next to the cavity */}
-          <mesh ref={pulpRef} position={[r * 1.4, size * 0.15, 0]}>
-            <sphereGeometry args={[r * 0.55, 18, 14]} />
-            <meshStandardMaterial color="#cc4422" emissive="#882211" emissiveIntensity={0.5} roughness={0.6} />
-          </mesh>
-        </group>
-      );
-    }
-    case 'extracted':
-      // Empty socket — dark concave depression
-      return (
-        <mesh position={[0, -size * 0.1, 0]} rotation={[Math.PI, 0, 0]}>
-          <sphereGeometry args={[size * 0.9, 20, 14, 0, Math.PI * 2, 0, Math.PI * 0.45]} />
-          <meshStandardMaterial color="#5a2020" roughness={0.9} />
-        </mesh>
-      );
-    default:
-      // Healthy — subtle ring marker so the user knows where they clicked
-      return (
-        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, size * 0.02, 0]}>
-          <ringGeometry args={[size * 0.5, size * 0.7, 32]} />
-          <meshBasicMaterial color="#4ade80" transparent opacity={0.6} side={THREE.DoubleSide} depthWrite={false} />
-        </mesh>
-      );
-  }
-}
-
-/* ── Big translucent "aura" sphere highlighting the affected zone ── */
-
-function DiseaseAura({ position, radius, color, pulse }) {
-  const meshRef = useRef();
-  useFrameImpl(({ clock }) => {
-    if (!meshRef.current) return;
-    const t = clock.elapsedTime;
-    const baseOpacity = pulse ? 0.45 : 0.32;
-    meshRef.current.material.opacity = baseOpacity + Math.sin(t * (pulse ? 3 : 1.2)) * 0.12;
-    const baseScale = 1 + (pulse ? Math.sin(t * 3) * 0.08 : Math.sin(t * 1.2) * 0.04);
-    meshRef.current.scale.set(baseScale, baseScale, baseScale);
-  });
-
-  return (
-    <mesh ref={meshRef} position={position}>
-      <sphereGeometry args={[radius, 24, 24]} />
-      <meshBasicMaterial color={color} transparent opacity={0.4} depthWrite={false} />
-    </mesh>
-  );
-}
-
-/* ── Pulsing surface marker ─────────────────────────────────── */
-
-function PulseMarker({ position, color, pulse }) {
-  const ringRef = useRef();
-  const dotRef = useRef();
-  useFrameSafe(({ clock }) => {
-    const t = clock.elapsedTime;
-    if (ringRef.current) {
-      const s = pulse ? 1 + Math.sin(t * 3) * 0.3 : 1 + Math.sin(t * 1.2) * 0.1;
-      ringRef.current.scale.set(s, s, s);
-      ringRef.current.material.opacity = pulse ? 0.6 + Math.sin(t * 3) * 0.3 : 0.5;
-    }
-    if (dotRef.current && pulse) {
-      dotRef.current.material.emissiveIntensity = 0.7 + Math.sin(t * 3) * 0.4;
-    }
-  });
-
-  return (
-    <group position={position}>
-      <mesh ref={dotRef}>
-        <sphereGeometry args={[0.5, 16, 16]} />
-        <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.7} />
-      </mesh>
-      <mesh ref={ringRef} rotation={[-Math.PI / 2, 0, 0]}>
-        <ringGeometry args={[0.7, 1.0, 32]} />
-        <meshBasicMaterial color={color} transparent opacity={0.6} side={THREE.DoubleSide} />
-      </mesh>
     </group>
   );
-}
-
-/* ── Connector line between scan marker and callout tooth ──── */
-
-function ConnectorLine({ from, to, color }) {
-  return (
-    <Line
-      points={[from, to]}
-      color={color}
-      lineWidth={1.5}
-      dashed
-      dashSize={0.4}
-      gapSize={0.25}
-      transparent
-      opacity={0.7}
-    />
-  );
-}
-
-/* Small wrapper so PulseMarker can call useFrame without crashing if drei tree changes */
-function useFrameSafe(cb) {
-  // Imported via @react-three/fiber at top of file
-  // Local re-export to keep PulseMarker self-contained
-  // eslint-disable-next-line react-hooks/rules-of-hooks
-  useFrameImpl(cb);
 }
 
 /* ── Tooth data generator ───────────────────────────────────── */
