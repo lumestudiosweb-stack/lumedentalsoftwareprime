@@ -282,15 +282,8 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
       const finalSize = new THREE.Vector3();
       geo.boundingBox.getSize(finalSize);
 
-      const hadVertexColors = !!geo.attributes.color;
-      const hasUVs = !!geo.attributes.uv;
-
-      // If the file has neither vertex colors nor UVs (typical STL / PLY),
-      // generate REALISTIC tooth + gum vertex colors based on geometry so
-      // the scan stops looking like a white plastic blob.
-      if (!hadVertexColors) {
-        applyProceduralDentalColors(geo);
-      }
+      const hadVertexColors = !!(geo.attributes.color?.count > 0);
+      const hasUVs = !!(geo.attributes.uv?.count > 0);
 
       setBbox({
         sizeX: finalSize.x,
@@ -300,7 +293,7 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
         frontZ: geo.boundingBox.max.z,
       });
       setHasUVs(hasUVs);
-      setHasVertexColors(true); // always true now (we either had them or made them)
+      setHasVertexColors(hadVertexColors);
       setGeometry(geo);
     };
 
@@ -356,16 +349,10 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
   useFrameImpl(({ clock }) => {
     if (!meshRef.current) return;
     const mat = meshRef.current.material;
-    if (!hasRealColor) {
-      mat.color.set(styling.color);
-    } else {
-      mat.color.set('#ffffff'); // let the texture/vertex colors come through unmodulated
-    }
+    mat.color.set(texture ? '#ffffff' : hasVertexColors ? '#ffffff' : '#e8dfd0');
     mat.emissive.set(styling.emissive);
-    let intensity = styling.emissiveIntensity * (hasRealColor ? 0.08 : 0.15);
-    if (isPulsing) {
-      intensity += Math.sin(clock.elapsedTime * 3) * 0.05;
-    }
+    let intensity = styling.emissiveIntensity * (hasRealColor ? 0.06 : 0.12);
+    if (isPulsing) intensity += Math.sin(clock.elapsedTime * 3) * 0.05;
     mat.emissiveIntensity = Math.max(0, intensity);
   });
 
@@ -387,23 +374,23 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
       {/* The patient's actual scan — kept looking like a scan */}
       <mesh ref={meshRef} geometry={geometry} castShadow receiveShadow>
         <meshPhysicalMaterial
-          color={hasRealColor ? '#ffffff' : styling.color}
+          color={texture ? '#ffffff' : hasVertexColors ? '#ffffff' : '#e8dfd0'}
           map={texture || null}
           vertexColors={!texture && hasVertexColors}
           emissive={styling.emissive}
-          emissiveIntensity={styling.emissiveIntensity * (hasRealColor ? 0.08 : 0.15)}
-          roughness={hasRealColor ? 0.45 : 0.4}
-          metalness={0.04}
-          clearcoat={hasRealColor ? 0.15 : 0.25}
-          clearcoatRoughness={0.3}
+          emissiveIntensity={styling.emissiveIntensity * (hasRealColor ? 0.06 : 0.12)}
+          roughness={texture ? 0.45 : 0.5}
+          metalness={0.03}
+          clearcoat={0.1}
+          clearcoatRoughness={0.4}
         />
       </mesh>
 
-      {/* Info badge if user uploaded a texture but the mesh has no UVs */}
-      {texture && !hasUVs && (
-        <Html position={[0, bbox.topY + 1.5, 0]} center distanceFactor={20}>
-          <div className="bg-amber-500/90 text-black text-[10px] font-semibold px-3 py-1.5 rounded-md whitespace-nowrap pointer-events-none">
-            Showing procedural color · Re-export as OBJ to wrap your JPEG
+      {/* Hint when no texture is loaded */}
+      {!texture && (
+        <Html position={[0, bbox.topY + 2, 0]} center distanceFactor={22}>
+          <div className="bg-black/70 text-gray-400 text-[10px] px-3 py-1.5 rounded-md whitespace-nowrap pointer-events-none border border-white/10">
+            Drop colour JPEG anywhere to apply texture
           </div>
         </Html>
       )}
