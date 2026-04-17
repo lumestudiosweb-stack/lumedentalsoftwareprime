@@ -115,6 +115,81 @@ function getStageStyling(activeState) {
  * This frames the slider as a treatment / projection journey rather
  * than a "before vs after" comparison.
  */
+/**
+ * Paints realistic tooth + gum colors directly onto the mesh as vertex colors.
+ *   • Top of mesh        → cream-white teeth
+ *   • Side / lower mesh  → pink gingiva
+ *   • Smooth blend at the gum line with per-vertex variation for realism
+ *
+ * Auto-detects whether the arch is upper (teeth at bottom) or lower (teeth
+ * at top) by checking which end has more "pointy" peaks (cusps).
+ */
+function applyProceduralDentalColors(geo) {
+  const positions = geo.attributes.position;
+  const normals = geo.attributes.normal;
+  const count = positions.count;
+
+  const minY = geo.boundingBox.min.y;
+  const maxY = geo.boundingBox.max.y;
+  const range = Math.max(0.0001, maxY - minY);
+
+  // Detect arch orientation: teeth point AWAY from the gum side.
+  // Sample a few hundred normals and see whether more point up or down.
+  let upCount = 0, downCount = 0;
+  const step = Math.max(1, Math.floor(count / 500));
+  for (let i = 0; i < count; i += step) {
+    const ny = normals.getY(i);
+    if (ny > 0.5) upCount++;
+    else if (ny < -0.5) downCount++;
+  }
+  const teethAtTop = upCount >= downCount;
+
+  // Realistic clinical color palette
+  const enamel  = new THREE.Color('#f5ecd8'); // cream-white tooth
+  const enamel2 = new THREE.Color('#ede0c5'); // slightly more yellow for variation
+  const gum     = new THREE.Color('#cc6677'); // healthy pink gingiva
+  const gum2    = new THREE.Color('#a04050'); // deeper pink for shadows
+  const sulcus  = new THREE.Color('#7a2030'); // dark red at the gum line
+
+  const colors = new Float32Array(count * 3);
+  const tmp = new THREE.Color();
+
+  for (let i = 0; i < count; i++) {
+    const y = positions.getY(i);
+    // tNorm: 0 = gum end, 1 = tooth end
+    let tNorm = (y - minY) / range;
+    if (!teethAtTop) tNorm = 1 - tNorm;
+
+    let baseColor;
+    if (tNorm > 0.62) {
+      // Tooth zone — cream with subtle yellow variation
+      const v = (Math.sin(positions.getX(i) * 7) + Math.cos(positions.getZ(i) * 7)) * 0.5 + 0.5;
+      baseColor = enamel.clone().lerp(enamel2, v * 0.4);
+    } else if (tNorm > 0.5) {
+      // Gum line transition — dark red
+      const blend = (tNorm - 0.5) / 0.12; // 0 → 1 across the band
+      baseColor = sulcus.clone().lerp(enamel, blend * blend);
+    } else if (tNorm > 0.25) {
+      // Attached gingiva — pink with some variation
+      const v = Math.abs(Math.sin(positions.getX(i) * 3 + positions.getZ(i) * 3));
+      baseColor = gum.clone().lerp(gum2, v * 0.3);
+    } else {
+      // Apical / root area — deeper pink fading to dark
+      const blend = tNorm / 0.25;
+      baseColor = gum2.clone().lerp(gum, blend);
+    }
+
+    // Tiny per-vertex luminosity noise for organic feel
+    const noise = (Math.random() - 0.5) * 0.04;
+    tmp.copy(baseColor);
+    colors[i * 3]     = Math.max(0, Math.min(1, tmp.r + noise));
+    colors[i * 3 + 1] = Math.max(0, Math.min(1, tmp.g + noise * 0.8));
+    colors[i * 3 + 2] = Math.max(0, Math.min(1, tmp.b + noise * 0.8));
+  }
+
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+}
+
 function TreatmentJourney({ url, format, textureUrl, simulation, activeStateIndex }) {
   const meshRef = useRef();
   const [geometry, setGeometry] = useState(null);
@@ -137,6 +212,17 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
       geo.computeBoundingBox();
       const finalSize = new THREE.Vector3();
       geo.boundingBox.getSize(finalSize);
+
+      const hadVertexColors = !!geo.attributes.color;
+      const hasUVs = !!geo.attributes.uv;
+
+      // If the file has neither vertex colors nor UVs (typical STL / PLY),
+      // generate REALISTIC tooth + gum vertex colors based on geometry so
+      // the scan stops looking like a white plastic blob.
+      if (!hadVertexColors) {
+        applyProceduralDentalColors(geo);
+      }
+
       setBbox({
         sizeX: finalSize.x,
         sizeY: finalSize.y,
@@ -144,8 +230,8 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
         topY: geo.boundingBox.max.y,
         frontZ: geo.boundingBox.max.z,
       });
-      setHasUVs(!!geo.attributes.uv);
-      setHasVertexColors(!!geo.attributes.color);
+      setHasUVs(hasUVs);
+      setHasVertexColors(true); // always true now (we either had them or made them)
       setGeometry(geo);
     };
 
@@ -239,11 +325,11 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
         />
       </mesh>
 
-      {/* Helpful warning if user uploaded a texture but the mesh has no UVs */}
-      {texture && !hasUVs && !hasVertexColors && (
+      {/* Info badge if user uploaded a texture but the mesh has no UVs */}
+      {texture && !hasUVs && (
         <Html position={[0, bbox.topY + 1.5, 0]} center distanceFactor={20}>
-          <div className="bg-amber-500/90 text-black text-[10px] font-bold px-3 py-1.5 rounded-md whitespace-nowrap pointer-events-none">
-            ⚠ Mesh has no UVs — re-export as OBJ to use this texture
+          <div className="bg-amber-500/90 text-black text-[10px] font-semibold px-3 py-1.5 rounded-md whitespace-nowrap pointer-events-none">
+            Showing procedural color · Re-export as OBJ to wrap your JPEG
           </div>
         </Html>
       )}
