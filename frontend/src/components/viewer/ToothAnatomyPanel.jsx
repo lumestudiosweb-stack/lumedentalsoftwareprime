@@ -1,32 +1,20 @@
-import { useMemo, useRef, Suspense } from 'react';
-import { Canvas, useFrame } from '@react-three/fiber';
+import { useMemo, useRef, useEffect, Suspense } from 'react';
+import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls, Environment, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { toothName } from './ToothPicker';
 
 /**
- * ToothAnatomyPanel — side panel that shows the picked tooth as a
- * full 3D model with the surrounding periodontium AND a half-cutaway
- * view that exposes the internal layers:
- *
- *   • Enamel (translucent off-white outer shell)
- *   • Dentin (yellow-cream layer underneath)
- *   • Pulp chamber + root canals (red soft tissue)
- *   • Cementum (root surface)
- *   • PDL ring (periodontal ligament)
- *   • Alveolar bone socket
- *   • Gingiva collar
- *
- * On top of this anatomical model the dentist's chosen pathology
- * (Black's class + surface(s) + depth + kind) is rendered at the
- * anatomically correct landmark — e.g. central groove for Class I O,
- * mesial marginal ridge for Class II MO, cervical third buccal for
- * Class V B, etc.
+ * ToothAnatomyPanel — side panel with a 3D cross-section of the picked
+ * tooth. When pathology is set the camera automatically faces the
+ * affected surface and the clipping plane is rotated so the cavity
+ * is exposed in cross-section rather than hidden.
  */
 export default function ToothAnatomyPanel({ fdi, pathology, onClose }) {
   if (!fdi) return null;
 
   const morphology = useMemo(() => getToothMorphology(fdi), [fdi]);
+  const primarySurface = pathology?.surfaces?.[0] || null;
 
   return (
     <div className="bg-surface-1 border border-white/5 rounded-lg overflow-hidden flex flex-col">
@@ -39,26 +27,26 @@ export default function ToothAnatomyPanel({ fdi, pathology, onClose }) {
           </div>
         </div>
         {onClose && (
-          <button onClick={onClose} className="text-gray-500 hover:text-white text-xs px-2">
-            ✕
-          </button>
+          <button onClick={onClose} className="text-gray-500 hover:text-white text-xs px-2">✕</button>
         )}
       </div>
 
-      {/* 3D Viewer */}
-      <div className="h-72 bg-gradient-to-b from-[#0a0a14] to-[#000]">
+      {/* 3D Viewer — taller so cross-section is clearly visible */}
+      <div className="h-80 bg-gradient-to-b from-[#0a0a14] to-[#000]">
         <Canvas
-          camera={{ position: [0, 1, 8], fov: 38 }}
+          camera={{ position: [-2, 3, 8], fov: 38 }}
           gl={{ antialias: true, toneMapping: THREE.ACESFilmicToneMapping, localClippingEnabled: true }}
           onCreated={({ gl }) => { gl.localClippingEnabled = true; }}
         >
-          <ambientLight intensity={0.55} />
-          <directionalLight position={[4, 6, 6]} intensity={1.4} />
-          <directionalLight position={[-4, 3, -4]} intensity={0.5} color="#aaccff" />
-          <pointLight position={[0, -3, 4]} intensity={0.4} color="#ffeedd" />
+          <ambientLight intensity={0.65} />
+          <directionalLight position={[4, 7, 6]} intensity={1.5} />
+          <directionalLight position={[-5, 4, -4]} intensity={0.6} color="#aaccff" />
+          <pointLight position={[-4, 2, 4]} intensity={0.55} color="#ffeedd" />
+          <spotLight position={[0, 9, 8]} intensity={0.8} angle={0.45} penumbra={0.5} />
           <Suspense fallback={null}>
+            <CameraController primarySurface={primarySurface} pathologyKind={pathology?.kind} />
             <ToothScene morphology={morphology} pathology={pathology} fdi={fdi} />
-            <Environment preset="studio" environmentIntensity={0.45} />
+            <Environment preset="studio" environmentIntensity={0.5} />
           </Suspense>
           <OrbitControls
             enableDamping
@@ -71,7 +59,7 @@ export default function ToothAnatomyPanel({ fdi, pathology, onClose }) {
         </Canvas>
       </div>
 
-      {/* Legend / clinical note */}
+      {/* Legend */}
       <div className="p-3 space-y-1.5 text-[10px]">
         <LegendRow color="#f5ecd8" label="Enamel" />
         <LegendRow color="#e6c98a" label="Dentin" />
@@ -86,12 +74,8 @@ export default function ToothAnatomyPanel({ fdi, pathology, onClose }) {
       {pathology?.kind && (
         <div className="px-3 pb-3">
           <div className="bg-black/40 border border-white/5 rounded-md p-2.5">
-            <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">
-              Diagnosis / Plan
-            </div>
-            <div className="text-xs text-white font-medium">
-              {pathologyHumanLabel(pathology, fdi)}
-            </div>
+            <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Diagnosis / Plan</div>
+            <div className="text-xs text-white font-medium">{pathologyHumanLabel(pathology, fdi)}</div>
             {pathology.depth && (
               <div className="text-[10px] text-gray-500 mt-1">
                 Depth: <span className="text-gray-300 capitalize">{pathology.depth.replace('_', ' ')}</span>
@@ -114,46 +98,64 @@ function LegendRow({ color, label }) {
 }
 
 /* ──────────────────────────────────────────────────────────
-   3D scene: full anatomy with optional half-cutaway and lesion overlay
+   Auto-orient the camera toward the affected surface
+   so the cavity is immediately visible without orbiting.
+─────────────────────────────────────────────────────────── */
+function CameraController({ primarySurface, pathologyKind }) {
+  const { camera } = useThree();
+
+  useEffect(() => {
+    if (!pathologyKind) return;
+    // Move to a vantage point that faces the surface with the lesion
+    const positions = {
+      M: [-7, 3.5, 5],   // mesial — slightly above-front-left
+      D: [7, 3.5, 5],    // distal
+      O: [0, 10, 3],     // occlusal — from above
+      I: [0, 10, 3],     // incisal — from above
+      B: [0, 2, 9],      // buccal — straight front
+      L: [0, 2, -9],     // lingual — from behind
+    };
+    const pos = positions[primarySurface] || [-3, 4, 7];
+    camera.position.set(pos[0], pos[1], pos[2]);
+    camera.lookAt(0, -0.3, 0);
+  }, [primarySurface, pathologyKind, camera]);
+
+  return null;
+}
+
+/* ──────────────────────────────────────────────────────────
+   3D scene
 ─────────────────────────────────────────────────────────── */
 function ToothScene({ morphology, pathology, fdi }) {
   const groupRef = useRef();
 
   useFrame(({ clock }) => {
     if (!groupRef.current) return;
-    // gentle bob if nothing picked
     if (!pathology?.kind) {
       groupRef.current.position.y = Math.sin(clock.elapsedTime * 0.6) * 0.05;
     }
   });
 
-  // Whether to render in cutaway mode (when a pathology requires showing depth)
   const cutaway = !!pathology?.kind && pathology.kind !== 'sealant';
 
   return (
     <group ref={groupRef}>
-      {/* Alveolar bone socket — always visible, sits below */}
+      {/* Alveolar bone */}
       <mesh position={[0, -2.4, 0]}>
         <cylinderGeometry args={[1.3, 1.4, 1.6, 32]} />
         <meshStandardMaterial color="#e8d8b8" roughness={0.95} />
       </mesh>
-
-      {/* Gingiva — pink collar around the cervical area */}
+      {/* Gingiva */}
       <mesh position={[0, -1.4, 0]}>
         <cylinderGeometry args={[1.15, 1.25, 0.7, 32]} />
         <meshPhysicalMaterial color="#cc6677" roughness={0.7} clearcoat={0.3} clearcoatRoughness={0.5} />
       </mesh>
-
-      {/* Periodontal ligament — thin grey ring around the root */}
+      {/* PDL */}
       <mesh position={[0, -2.0, 0]}>
         <cylinderGeometry args={[1.02, 1.08, 1.3, 32]} />
         <meshStandardMaterial color="#a0a098" roughness={0.9} transparent opacity={0.85} />
       </mesh>
-
-      {/* The tooth itself — anatomical layers */}
       <ToothAnatomy morphology={morphology} cutaway={cutaway} pathology={pathology} fdi={fdi} />
-
-      {/* Floating tooth-number label */}
       <Html position={[0, 2.6, 0]} center distanceFactor={6}>
         <div className="bg-black/70 text-white text-[10px] px-2 py-0.5 rounded border border-white/10 pointer-events-none">
           #{fdi}
@@ -164,18 +166,38 @@ function ToothScene({ morphology, pathology, fdi }) {
 }
 
 /* ──────────────────────────────────────────────────────────
-   Layered tooth — enamel + dentin + pulp, with a cutaway plane
-   that hides the +X half of each layer when cutaway===true.
+   Layered tooth anatomy with SMART clipping plane.
+
+   The clip direction is chosen based on the primary surface so the
+   cavity is always in the EXPOSED half, not the hidden half.
+
+   THREE.Plane(normal, constant) clips fragments where
+     dot(normal, point) + constant > 0
+
+   Surface → clip logic:
+     M  — clip x > 0  (show mesial / x < 0 side)
+     D  — clip x < 0  (show distal / x > 0 side)
+     B  — clip z < 0  (show buccal / z > 0 side)
+     L  — clip z > 0  (show lingual / z < 0 side)
+     O/I — clip x < 0 (show right half for occlusal/incisal)
 ─────────────────────────────────────────────────────────── */
 function ToothAnatomy({ morphology, cutaway, pathology, fdi }) {
-  // Position landmarks relative to the tooth — used for placing lesion overlay.
   const landmark = useMemo(
     () => surfacesToLandmark(pathology?.surfaces || [], pathology?.classification, morphology),
     [pathology?.surfaces, pathology?.classification, morphology]
   );
 
-  // Clip planes for cutaway — clip away the +X side
-  const clipPlane = useMemo(() => new THREE.Plane(new THREE.Vector3(-1, 0, 0), 0), []);
+  const clipPlane = useMemo(() => {
+    if (!cutaway) return null;
+    const s = pathology?.surfaces?.[0];
+    if (s === 'M') return new THREE.Plane(new THREE.Vector3(1, 0, 0), 0);   // hide +X → expose mesial
+    if (s === 'D') return new THREE.Plane(new THREE.Vector3(-1, 0, 0), 0);  // hide -X → expose distal
+    if (s === 'B') return new THREE.Plane(new THREE.Vector3(0, 0, -1), 0);  // hide -Z → expose buccal
+    if (s === 'L') return new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);   // hide +Z → expose lingual
+    return new THREE.Plane(new THREE.Vector3(-1, 0, 0), 0);                 // default: show +X half
+  }, [cutaway, pathology?.surfaces]);
+
+  const clipPlanes = cutaway && clipPlane ? [clipPlane] : [];
 
   return (
     <group>
@@ -193,36 +215,36 @@ function ToothAnatomy({ morphology, cutaway, pathology, fdi }) {
           thickness={0.4}
           attenuationColor="#f0e8d0"
           attenuationDistance={2}
-          clippingPlanes={cutaway ? [clipPlane] : []}
+          clippingPlanes={clipPlanes}
           side={THREE.DoubleSide}
         />
       </mesh>
 
-      {/* Dentin layer — slightly smaller, warmer color */}
+      {/* Dentin layer */}
       <mesh position={[0, morphology.crownY, 0]} scale={[0.82, 0.86, 0.82]}>
         {morphology.crownGeo}
         <meshStandardMaterial
           color="#e6c98a"
           roughness={0.7}
-          clippingPlanes={cutaway ? [clipPlane] : []}
+          clippingPlanes={clipPlanes}
           side={THREE.DoubleSide}
         />
       </mesh>
 
-      {/* Pulp chamber — small red core */}
+      {/* Pulp chamber */}
       <mesh position={[0, morphology.crownY - 0.1, 0]}>
         <sphereGeometry args={[0.32, 24, 16]} />
         <meshStandardMaterial
           color="#cc4444"
           emissive="#990000"
-          emissiveIntensity={0.25}
+          emissiveIntensity={0.3}
           roughness={0.6}
-          clippingPlanes={cutaway ? [clipPlane] : []}
+          clippingPlanes={clipPlanes}
           side={THREE.DoubleSide}
         />
       </mesh>
 
-      {/* Root canal(s) — long thin red cylinder(s) extending into root */}
+      {/* Root canals */}
       {morphology.canals.map((c, i) => (
         <mesh key={i} position={[c.x, c.y, c.z]} rotation={c.rot || [0, 0, 0]}>
           <cylinderGeometry args={[0.06, 0.04, morphology.rootLen, 12]} />
@@ -230,12 +252,12 @@ function ToothAnatomy({ morphology, cutaway, pathology, fdi }) {
             color="#bb3333"
             emissive="#770000"
             emissiveIntensity={0.2}
-            clippingPlanes={cutaway ? [clipPlane] : []}
+            clippingPlanes={clipPlanes}
           />
         </mesh>
       ))}
 
-      {/* Root — cementum shell */}
+      {/* Roots */}
       {morphology.roots.map((r, i) => (
         <mesh key={i} position={[r.x, r.y, r.z]}>
           <coneGeometry args={[r.topRadius, morphology.rootLen, 16, 1, false, 0, Math.PI * 2]} />
@@ -243,63 +265,69 @@ function ToothAnatomy({ morphology, cutaway, pathology, fdi }) {
             color="#d4b890"
             roughness={0.85}
             metalness={0.02}
-            clippingPlanes={cutaway ? [clipPlane] : []}
+            clippingPlanes={clipPlanes}
             side={THREE.DoubleSide}
           />
         </mesh>
       ))}
 
-      {/* Lesion / restoration overlay placed at the right landmark */}
-      {pathology?.kind && landmark && (
-        <PathologyOverlay
-          pathology={pathology}
-          landmark={landmark}
-          fdi={fdi}
-          morphology={morphology}
-        />
+      {/* Pathology overlay — rendered WITHOUT clipping so it shows on both halves */}
+      {pathology?.kind && landmark && landmark.length > 0 && (
+        <PathologyOverlay pathology={pathology} landmark={landmark} fdi={fdi} morphology={morphology} />
       )}
     </group>
   );
 }
 
 /* ──────────────────────────────────────────────────────────
-   Pathology overlay — cavity / filling / crown / RCT etc. at
-   the anatomically correct landmark for the chosen surfaces.
+   Realistic pathology overlay
+
+   Group local axes (after rot is applied):
+     +Y  = outward from tooth surface  (above surface, visible from outside)
+     −Y  = inward into tooth           (below surface, visible in cross-section)
+     XZ  = parallel to tooth surface   (for flat discs/rings)
+
+   Cavity rendering layers:
+     1. Stain ring  (Y ≈ +0.03) — brown discoloration halo, visible from outside
+     2. Dark disc   (Y ≈ +0.02) — cavity opening on the surface
+     3. Cavity body (Y ≈ −0.5r) — sphere going INTO tooth (cross-section view)
+     4. Deep layer  (Y ≈ −1.1r) — darker core
+     5. Pulp (opt.) (Y ≈ −1.6r) — red pulp for pulp_exposure
+
+   The tooth mesh is clipped so the cavity side is exposed, making
+   layers 3–5 clearly visible without any transparency tricks.
 ─────────────────────────────────────────────────────────── */
 function PathologyOverlay({ pathology, landmark, fdi, morphology }) {
   const { kind, depth, classification, surfaces } = pathology;
-  const groupRef = useRef();
   const pulseRef = useRef();
+  const groupRef = useRef();
 
   useFrame(({ clock }) => {
-    if (pulseRef.current && (kind === 'caries' && depth === 'pulp_exposure')) {
-      pulseRef.current.material.opacity = 0.4 + Math.sin(clock.elapsedTime * 3) * 0.25;
+    if (pulseRef.current && kind === 'caries' && depth === 'pulp_exposure') {
+      const s = 1 + Math.sin(clock.elapsedTime * 3) * 0.18;
+      pulseRef.current.scale.set(s, s, s);
     }
   });
 
-  // Size + depth scaling
-  const lesionDepth = {
-    incipient: 0.05,
-    enamel: 0.12,
-    dentin: 0.28,
-    deep_dentin: 0.45,
-    pulp_exposure: 0.7,
+  // Radius scales with lesion depth
+  const r = {
+    incipient: 0.09,
+    enamel: 0.17,
+    dentin: 0.31,
+    deep_dentin: 0.47,
+    pulp_exposure: 0.66,
   }[depth || 'enamel'];
 
-  const lesionColor = {
-    incipient: '#fef3c7',
-    enamel: '#a87838',
-    dentin: '#5a3318',
-    deep_dentin: '#2a1208',
-    pulp_exposure: '#000',
+  // Color palette per depth — outermost stain → cavity surface → deep → inner
+  const col = {
+    incipient:     { stain: '#c4a060', opening: '#a87838', body: '#8B5E20', deep: '#5a3810' },
+    enamel:        { stain: '#9B6020', opening: '#7B4010', body: '#5a2808', deep: '#3a1805' },
+    dentin:        { stain: '#8B4513', opening: '#5a2808', body: '#3a1205', deep: '#100400' },
+    deep_dentin:   { stain: '#6a3010', opening: '#3a1205', body: '#1a0602', deep: '#050000' },
+    pulp_exposure: { stain: '#5a2010', opening: '#2a0802', body: '#050000', deep: '#cc0000' },
   }[depth || 'enamel'];
 
-  // Crown decision: special-case all-ceramic for 36 & 37 even if dentist
-  // generically picked a "crown" — and when they pick 'all_ceramic_crown'
-  // we render the right material regardless of tooth.
-  const isAllCeramic = kind === 'all_ceramic_crown' || ([36, 37].includes(fdi) && kind?.includes('crown'));
-
-  // CROWNS — full coronal coverage cap that REPLACES the natural crown look
+  // ── CROWNS ────────────────────────────────────────────────────
   if (kind === 'all_ceramic_crown' || kind === 'pfm_crown' || kind === 'metal_crown') {
     const isMetal = kind === 'metal_crown';
     const isPFM = kind === 'pfm_crown';
@@ -319,21 +347,20 @@ function PathologyOverlay({ pathology, landmark, fdi, morphology }) {
             thickness={0.3}
           />
         </mesh>
-        {/* Margin line at the cervical area */}
         <mesh position={[0, -morphology.crownH * 0.45, 0]}>
           <torusGeometry args={[0.95, 0.03, 8, 32]} />
           <meshStandardMaterial color="#888" roughness={0.5} />
         </mesh>
         <Html position={[0, morphology.crownH * 0.6 + 0.4, 0]} center distanceFactor={5}>
           <div className="bg-black/80 text-white text-[9px] px-1.5 py-0.5 rounded whitespace-nowrap pointer-events-none">
-            {isAllCeramic ? 'All-Ceramic Crown' : isPFM ? 'PFM Crown' : 'Metal Crown'}
+            {kind === 'all_ceramic_crown' ? 'All-Ceramic Crown' : kind === 'pfm_crown' ? 'PFM Crown' : 'Metal Crown'}
           </div>
         </Html>
       </group>
     );
   }
 
-  // EXTRACTION — render the empty socket + faded ghost
+  // ── EXTRACTION ──────────────────────────────────────────────
   if (kind === 'extraction') {
     return (
       <group position={[0, morphology.crownY, 0]}>
@@ -350,7 +377,7 @@ function PathologyOverlay({ pathology, landmark, fdi, morphology }) {
     );
   }
 
-  // RCT — gutta-percha visible in the canals
+  // ── RCT ────────────────────────────────────────────────────
   if (kind === 'rct') {
     return (
       <group>
@@ -369,7 +396,7 @@ function PathologyOverlay({ pathology, landmark, fdi, morphology }) {
     );
   }
 
-  // VENEER — thin shell on the buccal/labial surface
+  // ── VENEER ──────────────────────────────────────────────────
   if (kind === 'veneer') {
     const buccal = landmark.find((l) => l.surface === 'B') || { x: 0, y: morphology.crownY, z: 0.85 };
     return (
@@ -388,7 +415,7 @@ function PathologyOverlay({ pathology, landmark, fdi, morphology }) {
     );
   }
 
-  // SEALANT — thin coat in the central groove
+  // ── SEALANT ─────────────────────────────────────────────────
   if (kind === 'sealant') {
     return (
       <mesh position={[0, morphology.crownY + morphology.crownH * 0.45, 0]}>
@@ -398,53 +425,137 @@ function PathologyOverlay({ pathology, landmark, fdi, morphology }) {
     );
   }
 
-  // FILLINGS / CARIES / INLAY — placed at every selected surface landmark
+  // ── CARIES / FILLINGS / INLAY ────────────────────────────────
   return (
     <group ref={groupRef}>
-      {landmark.map((l, i) => {
-        const fillColor =
-          kind === 'composite_filling' ? '#f5ecd0' :
-          kind === 'amalgam' ? '#7a7a82' :
-          kind === 'inlay' ? '#e8e0c8' :
-          lesionColor; // caries
-
+      {landmark.map((l, idx) => {
         const isCaries = kind === 'caries';
-        const r = 0.18 + (lesionDepth || 0.1) * 0.5;
 
+        if (isCaries) {
+          return (
+            <group key={idx} position={[l.x, l.y, l.z]} rotation={l.rot || [0, 0, 0]}>
+              {/*
+                Layer 1 — stain halo
+                CircleGeometry and RingGeometry are flat in the XZ plane
+                facing +Y. In local space +Y = outward from surface, so
+                they lie flat against the tooth exterior and face the
+                camera when looking at the affected surface.
+              */}
+              <mesh position={[0, 0.04, 0]}>
+                <ringGeometry args={[r * 0.92, r * 2.3, 26]} />
+                <meshStandardMaterial
+                  color={col.stain}
+                  roughness={0.95}
+                  transparent
+                  opacity={0.72}
+                  side={THREE.DoubleSide}
+                  depthWrite={false}
+                />
+              </mesh>
+
+              {/* Layer 2 — cavity opening: dark filled disc on the surface */}
+              <mesh position={[0, 0.025, 0]}>
+                <circleGeometry args={[r * 0.9, 24]} />
+                <meshStandardMaterial
+                  color={col.opening}
+                  roughness={1.0}
+                  side={THREE.DoubleSide}
+                />
+              </mesh>
+
+              {/*
+                Layer 3 — cavity body: sphere going INTO tooth (−Y in local
+                space = inward). Exposed by the cross-section clipping plane.
+              */}
+              <mesh position={[0, -r * 0.48, 0]}>
+                <sphereGeometry args={[r * 0.88, 20, 16]} />
+                <meshStandardMaterial color={col.body} roughness={1.0} />
+              </mesh>
+
+              {/* Layer 4 — deep cavity: darker, smaller sphere further inside */}
+              <mesh position={[0, -r * 1.1, 0]}>
+                <sphereGeometry args={[r * 0.58, 16, 12]} />
+                <meshStandardMaterial
+                  color={col.deep}
+                  roughness={1.0}
+                  emissive={depth === 'pulp_exposure' ? '#880000' : '#000000'}
+                  emissiveIntensity={depth === 'pulp_exposure' ? 0.7 : 0}
+                />
+              </mesh>
+
+              {/* Dentin exposure ring — tan rim visible where enamel is breached */}
+              {(depth === 'dentin' || depth === 'deep_dentin' || depth === 'pulp_exposure') && (
+                <mesh position={[0, -r * 0.05, 0]}>
+                  <ringGeometry args={[r * 0.72, r * 0.95, 22]} />
+                  <meshStandardMaterial
+                    color="#c8a060"
+                    roughness={0.85}
+                    side={THREE.DoubleSide}
+                  />
+                </mesh>
+              )}
+
+              {/* Layer 5 — pulp: pulsing red sphere at the very bottom */}
+              {depth === 'pulp_exposure' && (
+                <mesh ref={idx === 0 ? pulseRef : null} position={[0, -r * 1.62, 0]}>
+                  <sphereGeometry args={[r * 0.38, 14, 12]} />
+                  <meshStandardMaterial
+                    color="#ff2222"
+                    emissive="#cc0000"
+                    emissiveIntensity={0.9}
+                  />
+                </mesh>
+              )}
+
+              {/* Surface label */}
+              <Html position={[0, r * 1.6 + 0.25, 0]} center distanceFactor={4}>
+                <div className="bg-black/85 text-amber-300 text-[8px] px-1.5 py-0.5 rounded whitespace-nowrap pointer-events-none border border-amber-500/40">
+                  {l.surface} — Caries · {(depth || '').replace('_', ' ')}
+                </div>
+              </Html>
+            </group>
+          );
+        }
+
+        // ── Fillings (composite / amalgam / inlay) ──────────────
+        const fillColor =
+          kind === 'composite_filling' ? '#f0ead8' :
+          kind === 'amalgam'           ? '#848490' :
+                                         '#e2d9c0'; // inlay
         return (
-          <group key={i} position={[l.x, l.y, l.z]} rotation={l.rot || [0, 0, 0]}>
-            {/* The actual lesion/restoration body — half-sphere into surface */}
-            <mesh ref={i === 0 ? pulseRef : null}>
-              <sphereGeometry args={[r, 20, 16, 0, Math.PI * 2, 0, Math.PI / 2]} />
+          <group key={idx} position={[l.x, l.y, l.z]} rotation={l.rot || [0, 0, 0]}>
+            {/* Filling dome — half-sphere protruding from surface */}
+            <mesh position={[0, r * 0.12, 0]}>
+              <sphereGeometry args={[r * 0.95, 22, 18, 0, Math.PI * 2, 0, Math.PI / 2]} />
               <meshPhysicalMaterial
                 color={fillColor}
-                roughness={isCaries ? 0.95 : 0.35}
-                metalness={kind === 'amalgam' ? 0.6 : 0.05}
-                clearcoat={!isCaries ? 0.5 : 0}
-                transparent={isCaries && depth === 'pulp_exposure'}
-                opacity={isCaries && depth === 'pulp_exposure' ? 0.8 : 1}
+                roughness={kind === 'amalgam' ? 0.22 : 0.28}
+                metalness={kind === 'amalgam' ? 0.65 : 0.04}
+                clearcoat={kind !== 'amalgam' ? 0.85 : 0.2}
+                clearcoatRoughness={0.14}
               />
             </mesh>
-            {/* Pulp involvement — bright red core showing through */}
-            {isCaries && depth === 'pulp_exposure' && (
-              <mesh position={[0, -r * 0.5, 0]}>
-                <sphereGeometry args={[r * 0.45, 16, 12]} />
-                <meshStandardMaterial color="#ff2222" emissive="#cc0000" emissiveIntensity={0.6} />
-              </mesh>
-            )}
-            {/* Surface label */}
-            <Html position={[0, r + 0.15, 0]} center distanceFactor={4}>
-              <div className="bg-black/80 text-amber-300 text-[8px] px-1 py-0.5 rounded whitespace-nowrap pointer-events-none border border-amber-500/30">
-                {l.surface}
+            {/* Margin ring */}
+            <mesh position={[0, 0.02, 0]}>
+              <ringGeometry args={[r * 0.88, r * 1.06, 26]} />
+              <meshStandardMaterial
+                color={kind === 'amalgam' ? '#555' : '#c8b890'}
+                roughness={0.7}
+                side={THREE.DoubleSide}
+              />
+            </mesh>
+            <Html position={[0, r + 0.3, 0]} center distanceFactor={4}>
+              <div className="bg-black/80 text-blue-200 text-[8px] px-1.5 py-0.5 rounded whitespace-nowrap pointer-events-none border border-blue-500/30">
+                {l.surface} — {kindLabel(kind)}
               </div>
             </Html>
           </group>
         );
       })}
 
-      {/* Class label floating above */}
-      <Html position={[0, morphology.crownH * 0.6 + 0.5, 0]} center distanceFactor={5}>
-        <div className="bg-black/80 text-white text-[9px] px-1.5 py-0.5 rounded whitespace-nowrap pointer-events-none">
+      {/* Class label */}
+      <Html position={[0, morphology.crownH * 0.6 + 0.55, 0]} center distanceFactor={5}>
+        <div className="bg-black/80 text-white text-[9px] px-2 py-0.5 rounded whitespace-nowrap pointer-events-none border border-white/10">
           Class {classification} {surfaces?.join('') || ''} · {kindLabel(kind)}
         </div>
       </Html>
@@ -453,8 +564,7 @@ function PathologyOverlay({ pathology, landmark, fdi, morphology }) {
 }
 
 /* ──────────────────────────────────────────────────────────
-   Tooth morphology — tells us what shape, how many roots,
-   and where the surface landmarks are.
+   Tooth morphology
 ─────────────────────────────────────────────────────────── */
 function getToothMorphology(fdi) {
   const pos = fdi % 10;
@@ -463,7 +573,6 @@ function getToothMorphology(fdi) {
   const isPremolar = pos >= 4 && pos < 6;
   const isCanine = pos === 3;
 
-  // Crown geometry: molars are wider/blockier, anteriors are blade-like
   let crownGeo;
   let crownH = 1.6;
   let crownY = -0.4;
@@ -473,104 +582,75 @@ function getToothMorphology(fdi) {
 
   if (isMolar) {
     crownH = 1.4;
-    crownGeo = (
-      <boxGeometry args={[1.7, crownH, 1.5]} />
-    );
-    // Upper molar = 3 roots, lower molar = 2 roots
+    crownGeo = <boxGeometry args={[1.7, crownH, 1.5]} />;
     if (isUpper) {
-      roots = [
-        { x: -0.5, y: -2.0, z: 0.4, topRadius: 0.35 },
-        { x: 0.5, y: -2.0, z: 0.4, topRadius: 0.35 },
-        { x: 0, y: -2.0, z: -0.5, topRadius: 0.35 },
-      ];
-      canals = [
-        { x: -0.5, y: -2.0, z: 0.4 },
-        { x: 0.5, y: -2.0, z: 0.4 },
-        { x: 0, y: -2.0, z: -0.5 },
-      ];
+      roots  = [{ x: -0.5, y: -2.0, z:  0.4, topRadius: 0.35 }, { x: 0.5, y: -2.0, z: 0.4, topRadius: 0.35 }, { x: 0, y: -2.0, z: -0.5, topRadius: 0.35 }];
+      canals = [{ x: -0.5, y: -2.0, z:  0.4 }, { x: 0.5, y: -2.0, z: 0.4 }, { x: 0, y: -2.0, z: -0.5 }];
     } else {
-      roots = [
-        { x: -0.45, y: -2.0, z: 0, topRadius: 0.4 },
-        { x: 0.45, y: -2.0, z: 0, topRadius: 0.4 },
-      ];
-      canals = [
-        { x: -0.45, y: -2.0, z: 0 },
-        { x: 0.45, y: -2.0, z: 0 },
-      ];
+      roots  = [{ x: -0.45, y: -2.0, z: 0, topRadius: 0.4 }, { x: 0.45, y: -2.0, z: 0, topRadius: 0.4 }];
+      canals = [{ x: -0.45, y: -2.0, z: 0 }, { x: 0.45, y: -2.0, z: 0 }];
     }
   } else if (isPremolar) {
     crownH = 1.5;
     crownGeo = <boxGeometry args={[1.2, crownH, 1.3]} />;
-    roots = [{ x: 0, y: -2.0, z: 0, topRadius: 0.4 }];
+    roots  = [{ x: 0, y: -2.0, z: 0, topRadius: 0.4 }];
     canals = [{ x: 0, y: -2.0, z: 0 }];
   } else if (isCanine) {
     crownH = 1.9;
     crownGeo = <boxGeometry args={[0.9, crownH, 1.1]} />;
     crownY = -0.2;
     rootLen = 2.2;
-    roots = [{ x: 0, y: -2.2, z: 0, topRadius: 0.4 }];
+    roots  = [{ x: 0, y: -2.2, z: 0, topRadius: 0.4 }];
     canals = [{ x: 0, y: -2.2, z: 0 }];
   } else {
-    // incisor — flat blade
     crownH = 1.6;
     crownGeo = <boxGeometry args={[0.95, crownH, 0.55]} />;
     rootLen = 1.8;
-    roots = [{ x: 0, y: -2.1, z: 0, topRadius: 0.35 }];
+    roots  = [{ x: 0, y: -2.1, z: 0, topRadius: 0.35 }];
     canals = [{ x: 0, y: -2.1, z: 0 }];
   }
 
   return {
-    fdi,
-    isUpper,
-    isMolar,
-    isPremolar,
-    isCanine,
-    crownGeo,
-    crownH,
-    crownY,
-    rootLen,
-    roots,
-    canals,
-    // tooth half-extents used for landmark placement
+    fdi, isUpper, isMolar, isPremolar, isCanine,
+    crownGeo, crownH, crownY, rootLen, roots, canals,
     halfX: isMolar ? 0.85 : isPremolar ? 0.6 : isCanine ? 0.45 : 0.475,
     halfZ: isMolar ? 0.75 : isPremolar ? 0.65 : isCanine ? 0.55 : 0.275,
   };
 }
 
 /* ──────────────────────────────────────────────────────────
-   Map dentist surface picks → 3D landmark positions on the
-   morphology, oriented for that surface.
-   M = mesial, O = occlusal, D = distal, B = buccal, L = lingual,
-   I = incisal.
+   Surface → 3D landmark
 
-   Note: the FDI mesial/distal direction depends on the quadrant.
-   For simplicity in this single-tooth viewer we always render
-   M to the -X side and D to the +X side; B is +Z (toward viewer),
-   L is -Z (away from viewer).
+   Rotation convention: after applying l.rot, local +Y = outward
+   from the tooth surface at that landmark.
+
+     M (mesial)  x = −halfX  rot = [0, 0, +PI/2]  → +Y = global −X (outward)
+     D (distal)  x = +halfX  rot = [0, 0, −PI/2]  → +Y = global +X (outward)
+     B (buccal)  z = +halfZ  rot = [−PI/2, 0, 0]  → +Y = global +Z (outward)
+     L (lingual) z = −halfZ  rot = [+PI/2, 0, 0]  → +Y = global −Z (outward)
+     O / I       (no rot)    → +Y = global +Y (upward = outward for crown top)
 ─────────────────────────────────────────────────────────── */
 function surfacesToLandmark(surfaces, classification, m) {
   if (!surfaces || surfaces.length === 0) {
-    // Default landmark if classification implies one and no surface picked yet
-    if (classification === 'I')   return [{ surface: 'O', x: 0, y: m.crownY + m.crownH * 0.5, z: 0 }];
-    if (classification === 'V')   return [{ surface: 'B', x: 0, y: m.crownY - m.crownH * 0.4, z: m.halfZ }];
-    if (classification === 'VI')  return [{ surface: m.isMolar ? 'O' : 'I', x: 0, y: m.crownY + m.crownH * 0.5, z: 0 }];
+    if (classification === 'I')  return [{ surface: 'O', x: 0, y: m.crownY + m.crownH * 0.5, z: 0 }];
+    if (classification === 'V')  return [{ surface: 'B', x: 0, y: m.crownY - m.crownH * 0.4, z: m.halfZ, rot: [-Math.PI / 2, 0, 0] }];
+    if (classification === 'VI') return [{ surface: m.isMolar ? 'O' : 'I', x: 0, y: m.crownY + m.crownH * 0.5, z: 0 }];
     return [];
   }
 
   const out = [];
   for (const s of surfaces) {
-    if (s === 'O') out.push({ surface: 'O', x: 0, y: m.crownY + m.crownH * 0.5, z: 0 });
-    if (s === 'I') out.push({ surface: 'I', x: 0, y: m.crownY + m.crownH * 0.5, z: 0 });
-    if (s === 'M') out.push({ surface: 'M', x: -m.halfX, y: m.crownY + m.crownH * 0.15, z: 0, rot: [0, 0, Math.PI / 2] });
-    if (s === 'D') out.push({ surface: 'D', x:  m.halfX, y: m.crownY + m.crownH * 0.15, z: 0, rot: [0, 0, -Math.PI / 2] });
+    if (s === 'O') out.push({ surface: 'O', x: 0,        y: m.crownY + m.crownH * 0.5,                                  z: 0 });
+    if (s === 'I') out.push({ surface: 'I', x: 0,        y: m.crownY + m.crownH * 0.5,                                  z: 0 });
+    if (s === 'M') out.push({ surface: 'M', x: -m.halfX, y: m.crownY + m.crownH * 0.15,                                 z: 0, rot: [0, 0,  Math.PI / 2] });
+    if (s === 'D') out.push({ surface: 'D', x:  m.halfX, y: m.crownY + m.crownH * 0.15,                                 z: 0, rot: [0, 0, -Math.PI / 2] });
     if (s === 'B') {
-      // Class V is at the cervical third, others mid-crown
       const yOff = classification === 'V' ? m.crownY - m.crownH * 0.35 : m.crownY + m.crownH * 0.1;
-      out.push({ surface: 'B', x: 0, y: yOff, z: m.halfZ, rot: [Math.PI / 2, 0, 0] });
+      out.push({ surface: 'B', x: 0, y: yOff, z:  m.halfZ, rot: [-Math.PI / 2, 0, 0] });
     }
     if (s === 'L') {
       const yOff = classification === 'V' ? m.crownY - m.crownH * 0.35 : m.crownY + m.crownH * 0.1;
-      out.push({ surface: 'L', x: 0, y: yOff, z: -m.halfZ, rot: [-Math.PI / 2, 0, 0] });
+      out.push({ surface: 'L', x: 0, y: yOff, z: -m.halfZ, rot: [ Math.PI / 2, 0, 0] });
     }
   }
   return out;

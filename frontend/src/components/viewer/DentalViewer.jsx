@@ -83,7 +83,7 @@ function normalizeVertexColors(geo) {
  * Camera positioned for a front-facing clinical view looking slightly
  * down into the mouth — like a patient in the chair.
  */
-export default function DentalViewer({ scanUrl, scanFormat, simulation, activeStateIndex, textureUrl }) {
+export default function DentalViewer({ scanUrl, scanFormat, simulation, activeStateIndex, textureUrl, clinicalPathology, pickedTooth }) {
   return (
     <Canvas
       camera={{ position: [0, 14, 42], fov: 34, near: 0.1, far: 1000 }}
@@ -104,9 +104,9 @@ export default function DentalViewer({ scanUrl, scanFormat, simulation, activeSt
 
       <Suspense fallback={<LoadingIndicator />}>
         {scanUrl ? (
-          <TreatmentJourney url={scanUrl} format={scanFormat} textureUrl={textureUrl} simulation={simulation} activeStateIndex={activeStateIndex} />
+          <TreatmentJourney url={scanUrl} format={scanFormat} textureUrl={textureUrl} simulation={simulation} activeStateIndex={activeStateIndex} clinicalPathology={clinicalPathology} pickedTooth={pickedTooth} />
         ) : (
-          <PlaceholderArch simulation={simulation} activeStateIndex={activeStateIndex} />
+          <PlaceholderArch simulation={simulation} activeStateIndex={activeStateIndex} clinicalPathology={clinicalPathology} pickedTooth={pickedTooth} />
         )}
       </Suspense>
 
@@ -259,7 +259,7 @@ function applyProceduralDentalColors(geo) {
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 }
 
-function TreatmentJourney({ url, format, textureUrl, simulation, activeStateIndex }) {
+function TreatmentJourney({ url, format, textureUrl, simulation, activeStateIndex, clinicalPathology, pickedTooth }) {
   const meshRef = useRef();
   const [geometry, setGeometry] = useState(null);
   const [bbox, setBbox] = useState(null);
@@ -463,6 +463,13 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
               </button>
             )}
           </div>
+        </Html>
+      )}
+
+      {/* Clinical pathology card — shown when dentist has filled in the Clinical Tools panel */}
+      {clinicalPathology?.kind && pickedTooth && (
+        <Html position={[-(bbox.sizeX * 0.55 + 1), bbox.topY * 0.3, 0]} distanceFactor={20} style={{ width: 230 }}>
+          <PathologyCard pathology={clinicalPathology} tooth={pickedTooth} />
         </Html>
       )}
     </group>
@@ -809,13 +816,44 @@ function generateTeethData() {
 
 /* ── Procedural Dental Arch ─────────────────────────────────── */
 
-function PlaceholderArch({ simulation, activeStateIndex }) {
+function PlaceholderArch({ simulation, activeStateIndex, clinicalPathology, pickedTooth }) {
   const groupRef = useRef();
   const activeState = simulation?.states?.[activeStateIndex];
   const targetTeeth = simulation?.target_teeth || [];
 
   const teeth = useMemo(() => generateTeethData(), []);
   const isPerioInflamed = activeState?.clinical_metrics?.pocket_depth_mm > 5;
+
+  // Map clinical pathology kind → stage/treatment for ToothOverlay
+  const pathologyState = useMemo(() => {
+    if (!clinicalPathology?.kind) return null;
+    const { kind, depth } = clinicalPathology;
+    const stageMap = {
+      incipient: 'enamel', enamel: 'enamel',
+      dentin: 'dentin', deep_dentin: 'dentin', pulp_exposure: 'pulp',
+    };
+    const treatmentMap = {
+      composite_filling: 'composite_filling',
+      amalgam: 'composite_filling',
+      inlay: 'composite_filling',
+      all_ceramic_crown: 'zirconia_crown',
+      pfm_crown: 'zirconia_crown',
+      metal_crown: 'metal_crown',
+      rct: 'root_canal',
+    };
+    const stage = kind === 'caries' ? (stageMap[depth] || 'enamel') :
+                  kind === 'extraction' ? 'extracted' : 'restored';
+    const treatment = treatmentMap[kind] || null;
+    return {
+      clinical_metrics: {
+        stage,
+        treatment,
+        depth_mm: { incipient: 0.5, enamel: 1.5, dentin: 3, deep_dentin: 4.5, pulp_exposure: 6 }[depth] || 2,
+        reversible: stage === 'enamel',
+        risk: stage === 'pulp' || stage === 'abscess' ? 'high' : stage === 'dentin' ? 'moderate' : 'low',
+      },
+    };
+  }, [clinicalPathology]);
 
   return (
     <group ref={groupRef} rotation={[0.15, 0, 0]}>
@@ -837,9 +875,19 @@ function PlaceholderArch({ simulation, activeStateIndex }) {
       {/* Individual teeth */}
       {teeth.map((tooth) => {
         const isTarget = targetTeeth.includes(tooth.fdi);
+        const isPickedClinical = tooth.fdi === pickedTooth && pathologyState;
         return (
           <group key={tooth.fdi} position={[tooth.x, tooth.y, tooth.z]} rotation={[0, tooth.angle, 0]}>
-            {isTarget && activeState ? (
+            {/* Clinical pathology overlay takes priority over simulation overlay */}
+            {isPickedClinical ? (
+              <ToothOverlay
+                state={pathologyState}
+                module={simulation?.module}
+                targetTeeth={[pickedTooth]}
+                toothNumber={tooth.fdi}
+                toothSize={[tooth.width, tooth.height, tooth.depth]}
+              />
+            ) : isTarget && activeState ? (
               <ToothOverlay
                 state={activeState}
                 module={simulation?.module}
@@ -853,6 +901,7 @@ function PlaceholderArch({ simulation, activeStateIndex }) {
             {/* Tooth number label */}
             <Html position={[0, tooth.arch === 'upper' ? 2.0 : -2.0, 0]} center>
               <div className={`text-[9px] px-1 rounded select-none ${
+                isPickedClinical ? 'bg-amber-400 text-black font-bold' :
                 isTarget ? 'bg-white text-black font-bold' : 'text-gray-600'
               }`}>
                 {tooth.fdi}
@@ -862,8 +911,15 @@ function PlaceholderArch({ simulation, activeStateIndex }) {
         );
       })}
 
+      {/* Clinical pathology card — floats above the arch */}
+      {clinicalPathology?.kind && pickedTooth && (
+        <Html position={[0, 12, 0]} center>
+          <PathologyCard pathology={clinicalPathology} tooth={pickedTooth} />
+        </Html>
+      )}
+
       {/* State label */}
-      {activeState?.label && (
+      {activeState?.label && !clinicalPathology?.kind && (
         <Html position={[0, 10, 0]} center>
           <div className="bg-black/90 text-white px-4 py-2 rounded-lg text-xs font-medium whitespace-nowrap border border-white/10">
             {activeState.label}
@@ -871,6 +927,69 @@ function PlaceholderArch({ simulation, activeStateIndex }) {
         </Html>
       )}
     </group>
+  );
+}
+
+/* ── Pathology info card (React DOM, not Three.js) ────────── */
+
+function PathologyCard({ pathology, tooth }) {
+  const { kind, depth, classification, surfaces } = pathology;
+
+  const depthColors = {
+    incipient: '#fbbf24', enamel: '#f59e0b',
+    dentin: '#d97706', deep_dentin: '#b45309', pulp_exposure: '#dc2626',
+  };
+  const kindLabels = {
+    caries: 'Caries (Cavity)', composite_filling: 'Composite Filling',
+    amalgam: 'Amalgam Filling', inlay: 'Inlay/Onlay',
+    all_ceramic_crown: 'All-Ceramic Crown', pfm_crown: 'PFM Crown',
+    metal_crown: 'Full Metal Crown', rct: 'Root Canal Treatment',
+    extraction: 'Extraction', sealant: 'Sealant', veneer: 'Veneer',
+  };
+  const depthColor = depthColors[depth] || '#9ca3af';
+  const isCaries = kind === 'caries';
+
+  return (
+    <div
+      className="pointer-events-none select-none"
+      style={{
+        fontFamily: 'system-ui, sans-serif',
+        background: 'rgba(0,0,0,0.92)',
+        border: `1px solid ${isCaries ? depthColor + '55' : 'rgba(255,255,255,0.12)'}`,
+        borderRadius: 10,
+        padding: '10px 14px',
+        minWidth: 220,
+        boxShadow: isCaries ? `0 0 18px ${depthColor}33` : '0 4px 16px rgba(0,0,0,0.5)',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <div style={{
+          width: 10, height: 10, borderRadius: '50%',
+          background: isCaries ? depthColor : '#4ade80',
+          boxShadow: `0 0 8px ${isCaries ? depthColor : '#4ade80'}`,
+          flexShrink: 0,
+        }} />
+        <span style={{ fontSize: 13, fontWeight: 700, color: '#fff' }}>
+          Tooth #{tooth}
+        </span>
+      </div>
+      <div style={{ fontSize: 12, color: '#e5e7eb', marginBottom: 4 }}>
+        {kindLabels[kind] || kind}
+      </div>
+      {classification && (
+        <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 2 }}>
+          Class {classification}{surfaces?.length ? ' · ' + surfaces.join('') : ''}
+        </div>
+      )}
+      {isCaries && depth && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 6 }}>
+          <div style={{ width: 7, height: 7, borderRadius: '50%', background: depthColor }} />
+          <span style={{ fontSize: 11, color: depthColor, fontWeight: 600, textTransform: 'capitalize' }}>
+            {depth.replace('_', ' ')}
+          </span>
+        </div>
+      )}
+    </div>
   );
 }
 

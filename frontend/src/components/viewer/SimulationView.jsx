@@ -191,7 +191,7 @@ export default function SimulationView() {
       {/* 3D Viewer + Metrics Panel */}
       <div className="flex-1 flex relative">
         <div className="flex-1 bg-black">
-          <DentalViewer simulation={simulation} activeStateIndex={activeState} scanUrl={scanUrl} scanFormat={scanFormat} textureUrl={textureUrl} />
+          <DentalViewer simulation={simulation} activeStateIndex={activeState} scanUrl={scanUrl} scanFormat={scanFormat} textureUrl={textureUrl} clinicalPathology={pathology} pickedTooth={pickedTooth} />
         </div>
 
         {/* Side Panel */}
