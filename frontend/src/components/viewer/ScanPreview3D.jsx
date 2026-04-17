@@ -147,10 +147,12 @@ function ScanMesh({ url, format, textureUrl }) {
       if (cancelled) return;
       if (!g.attributes.normal?.count) g.computeVertexNormals();
 
-      // Inject extras from our custom parser
+      // Only inject diffuse colours if PLYLoader didn't find any
       if (extras?.colors && !(g.attributes.color?.count>0)) {
         g.setAttribute('color', new THREE.BufferAttribute(extras.colors, 3));
       }
+      // Only inject UVs if PLYLoader didn't already read them
+      // (PLYLoader reads texture_u/texture_v natively — don't overwrite)
       if (extras?.uvs && !(g.attributes.uv?.count>0)) {
         g.setAttribute('uv', new THREE.BufferAttribute(extras.uvs, 2));
       }
@@ -192,11 +194,14 @@ function ScanMesh({ url, format, textureUrl }) {
     if (textureUrl) {
       new THREE.TextureLoader().load(textureUrl, (tex) => {
         tex.colorSpace = THREE.SRGBColorSpace;
-        // Atlas textures from scanners are typically NOT flipped
-        tex.flipY = false;
+        // PLY UV coords (texture_u/v) use OpenGL convention: V=0 at bottom.
+        // Three.js TextureLoader flips Y by default to match — keep flipY = true.
+        tex.flipY = true;
         tex.wrapS = THREE.ClampToEdgeWrapping;
         tex.wrapT = THREE.ClampToEdgeWrapping;
-        tex.minFilter = THREE.LinearFilter;
+        tex.minFilter = THREE.LinearMipmapLinearFilter;
+        tex.generateMipmaps = true;
+        tex.anisotropy = 4;
         setMat(new THREE.MeshStandardMaterial({
           map: tex,
           vertexColors: false,
