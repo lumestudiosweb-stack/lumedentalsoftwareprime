@@ -2,7 +2,10 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { simulationAPI, patientAPI, scanAPI } from '../../services/mockApi';
 import DentalViewer from './DentalViewer';
-import { ChevronLeft, ChevronRight, Loader2, ArrowLeft, Play, Pause, Upload, Image as ImageIcon } from 'lucide-react';
+import ToothPicker from './ToothPicker';
+import PathologyPicker from './PathologyPicker';
+import ToothAnatomyPanel from './ToothAnatomyPanel';
+import { ChevronLeft, ChevronRight, Loader2, ArrowLeft, Play, Pause, Upload, Image as ImageIcon, Activity, Layers } from 'lucide-react';
 
 export default function SimulationView() {
   const { id } = useParams();
@@ -16,6 +19,11 @@ export default function SimulationView() {
   const [textureUrl, setTextureUrl] = useState(null);
   const [textureName, setTextureName] = useState(null);
   const [dragOver, setDragOver] = useState(false);
+
+  // Clinical tools side panel — dentist picks a tooth + assigns pathology
+  const [sideTab, setSideTab] = useState('timeline'); // 'timeline' | 'clinical'
+  const [pickedTooth, setPickedTooth] = useState(null);
+  const [pathology, setPathology] = useState({});
   const fileInputRef = useRef(null);
   const textureInputRef = useRef(null);
 
@@ -187,56 +195,131 @@ export default function SimulationView() {
         </div>
 
         {/* Side Panel */}
-        <div className="w-64 bg-surface-1 border-l border-white/5 overflow-y-auto">
-          <div className="p-4 border-b border-white/5">
-            <div className="text-[11px] text-gray-600 uppercase tracking-wider mb-1">Treatment Timeline</div>
-            <div className="text-sm font-display font-semibold text-white">{currentState?.label || 'No state selected'}</div>
-            <div className="flex items-center gap-2 mt-2">
-              <div className="flex-1 h-1 bg-white/5 rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-white rounded-full transition-all"
-                  style={{ width: `${((activeState + 1) / states.length) * 100}%` }}
+        <div className="w-[360px] bg-surface-1 border-l border-white/5 flex flex-col">
+          {/* Tab switcher */}
+          <div className="flex border-b border-white/5 bg-black/30">
+            <button
+              onClick={() => setSideTab('timeline')}
+              className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 text-[11px] font-semibold transition ${
+                sideTab === 'timeline'
+                  ? 'text-white border-b-2 border-blue-500 bg-white/5'
+                  : 'text-gray-500 hover:text-gray-300'
+              }`}
+            >
+              <Activity size={12} />
+              Timeline
+            </button>
+            <button
+              onClick={() => setSideTab('clinical')}
+              className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 text-[11px] font-semibold transition ${
+                sideTab === 'clinical'
+                  ? 'text-white border-b-2 border-emerald-500 bg-white/5'
+                  : 'text-gray-500 hover:text-gray-300'
+              }`}
+            >
+              <Layers size={12} />
+              Clinical Tools
+              {pickedTooth && (
+                <span className="ml-1 bg-emerald-500/20 text-emerald-300 text-[9px] px-1.5 py-0.5 rounded-full">
+                  #{pickedTooth}
+                </span>
+              )}
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto">
+            {sideTab === 'timeline' && (
+              <>
+                <div className="p-4 border-b border-white/5">
+                  <div className="text-[11px] text-gray-600 uppercase tracking-wider mb-1">Treatment Timeline</div>
+                  <div className="text-sm font-display font-semibold text-white">{currentState?.label || 'No state selected'}</div>
+                  <div className="flex items-center gap-2 mt-2">
+                    <div className="flex-1 h-1 bg-white/5 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-white rounded-full transition-all"
+                        style={{ width: `${((activeState + 1) / states.length) * 100}%` }}
+                      />
+                    </div>
+                    <span className="text-[10px] text-gray-500 font-medium tabular-nums">{activeState + 1}/{states.length}</span>
+                  </div>
+                  <div className="text-[11px] text-gray-600 mt-2">Drag the slider to step through each milestone</div>
+                </div>
+
+                {currentState?.clinical_metrics && (
+                  <div className="p-4 border-b border-white/5">
+                    <h3 className="text-[11px] text-gray-600 uppercase tracking-wider mb-3">Clinical Metrics</h3>
+                    <div className="space-y-2">
+                      {Object.entries(currentState.clinical_metrics).map(([key, val]) => (
+                        <div key={key} className="flex justify-between items-center">
+                          <span className="text-[11px] text-gray-500 capitalize">{key.replace(/_/g, ' ')}</span>
+                          <MetricValue label={key} value={val} />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="p-4">
+                  <h3 className="text-[11px] text-gray-600 uppercase tracking-wider mb-3">Timeline</h3>
+                  <div className="space-y-1">
+                    {states.map((s, i) => (
+                      <button key={i} onClick={() => setActiveState(i)}
+                        className={`w-full text-left px-3 py-2 rounded-lg text-xs transition ${
+                          i === activeState ? 'bg-white/10 text-white font-medium' : 'text-gray-500 hover:bg-white/5'
+                        }`}>
+                        <div className="flex items-center gap-2">
+                          <div className={`w-1.5 h-1.5 rounded-full ${i === activeState ? 'bg-white' : i < activeState ? 'bg-gray-500' : 'bg-gray-700'}`} />
+                          {s.label}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="p-4 border-t border-white/5">
+                  <h3 className="text-[11px] text-gray-600 uppercase tracking-wider mb-2">Module</h3>
+                  <span className="text-[11px] bg-white/5 text-gray-400 px-2 py-1 rounded capitalize">{simulation.module?.replace(/_/g, ' ')}</span>
+                </div>
+              </>
+            )}
+
+            {sideTab === 'clinical' && (
+              <div className="p-3 space-y-3">
+                <ToothPicker
+                  value={pickedTooth}
+                  onPick={(fdi) => { setPickedTooth(fdi); setPathology({}); }}
+                  highlightTeeth={simulation.target_teeth || []}
                 />
-              </div>
-              <span className="text-[10px] text-gray-500 font-medium tabular-nums">{activeState + 1}/{states.length}</span>
-            </div>
-            <div className="text-[11px] text-gray-600 mt-2">Drag the slider to step through each milestone</div>
-          </div>
-
-          {currentState?.clinical_metrics && (
-            <div className="p-4 border-b border-white/5">
-              <h3 className="text-[11px] text-gray-600 uppercase tracking-wider mb-3">Clinical Metrics</h3>
-              <div className="space-y-2">
-                {Object.entries(currentState.clinical_metrics).map(([key, val]) => (
-                  <div key={key} className="flex justify-between items-center">
-                    <span className="text-[11px] text-gray-500 capitalize">{key.replace(/_/g, ' ')}</span>
-                    <MetricValue label={key} value={val} />
+                {pickedTooth && (
+                  <ToothAnatomyPanel
+                    fdi={pickedTooth}
+                    pathology={pathology}
+                    onClose={() => { setPickedTooth(null); setPathology({}); }}
+                  />
+                )}
+                <PathologyPicker
+                  fdi={pickedTooth}
+                  value={pathology}
+                  onChange={setPathology}
+                />
+                {pickedTooth && pathology?.kind && (
+                  <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-lg p-3">
+                    <div className="text-[10px] text-emerald-300 uppercase tracking-wider mb-1">Treatment Plan Entry</div>
+                    <div className="text-xs text-white">
+                      Tooth #{pickedTooth} · Class {pathology.classification}
+                      {pathology.surfaces?.length ? ' ' + pathology.surfaces.join('') : ''}
+                      {' · '}
+                      <span className="capitalize">{(pathology.kind || '').replace(/_/g, ' ')}</span>
+                    </div>
+                    {pathology.depth && (
+                      <div className="text-[10px] text-gray-400 mt-1">
+                        Depth: <span className="capitalize">{pathology.depth.replace('_', ' ')}</span>
+                      </div>
+                    )}
                   </div>
-                ))}
+                )}
               </div>
-            </div>
-          )}
-
-          <div className="p-4">
-            <h3 className="text-[11px] text-gray-600 uppercase tracking-wider mb-3">Timeline</h3>
-            <div className="space-y-1">
-              {states.map((s, i) => (
-                <button key={i} onClick={() => setActiveState(i)}
-                  className={`w-full text-left px-3 py-2 rounded-lg text-xs transition ${
-                    i === activeState ? 'bg-white/10 text-white font-medium' : 'text-gray-500 hover:bg-white/5'
-                  }`}>
-                  <div className="flex items-center gap-2">
-                    <div className={`w-1.5 h-1.5 rounded-full ${i === activeState ? 'bg-white' : i < activeState ? 'bg-gray-500' : 'bg-gray-700'}`} />
-                    {s.label}
-                  </div>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="p-4 border-t border-white/5">
-            <h3 className="text-[11px] text-gray-600 uppercase tracking-wider mb-2">Module</h3>
-            <span className="text-[11px] bg-white/5 text-gray-400 px-2 py-1 rounded capitalize">{simulation.module?.replace(/_/g, ' ')}</span>
+            )}
           </div>
         </div>
       </div>

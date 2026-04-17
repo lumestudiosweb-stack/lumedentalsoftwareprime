@@ -535,18 +535,39 @@ function TreatmentOverlay({ position, normal, size, stage, treatment, pulsing })
 /* Per-stage anatomical visual — sits in local coords with +Y as the surface normal */
 function StageVisual({ stage, treatment, size }) {
   // Treatments win
-  if (treatment === 'zirconia_crown' || treatment === 'rct_crown' || stage === 'restored') {
-    // Shiny crown cap — silver-white metallic dome
+  if (treatment === 'metal_crown') {
+    // Full metal crown — silver/gold metallic dome
     return (
       <mesh position={[0, size * 0.4, 0]}>
         <sphereGeometry args={[size * 1.1, 24, 16, 0, Math.PI * 2, 0, Math.PI * 0.55]} />
         <meshPhysicalMaterial
-          color="#e8eef5"
-          metalness={0.7}
+          color="#c8ccd0"
+          metalness={0.85}
           roughness={0.15}
           clearcoat={1}
           clearcoatRoughness={0.05}
-          reflectivity={0.9}
+          reflectivity={0.95}
+        />
+      </mesh>
+    );
+  }
+  if (treatment === 'zirconia_crown' || treatment === 'all_ceramic_crown' || treatment === 'rct_crown' || stage === 'restored') {
+    // All-ceramic / zirconia crown — non-metallic, slight translucency, enamel-like
+    return (
+      <mesh position={[0, size * 0.4, 0]}>
+        <sphereGeometry args={[size * 1.1, 24, 16, 0, Math.PI * 2, 0, Math.PI * 0.55]} />
+        <meshPhysicalMaterial
+          color="#f8f0e0"
+          metalness={0.0}
+          roughness={0.18}
+          clearcoat={1}
+          clearcoatRoughness={0.08}
+          reflectivity={0.55}
+          transmission={0.08}
+          ior={1.5}
+          thickness={0.3}
+          attenuationColor="#f0e8d0"
+          attenuationDistance={1.5}
         />
       </mesh>
     );
