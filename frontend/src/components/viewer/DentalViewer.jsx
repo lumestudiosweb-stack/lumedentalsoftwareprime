@@ -7,6 +7,75 @@ import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import ToothOverlay, { RealisticTooth } from './ToothOverlay';
 
+/* ── Same PLY UV extractor as ScanPreview3D ─────────────────── */
+async function extractPLYExtras(url) {
+  try {
+    const resp = await fetch(url);
+    const buffer = await resp.arrayBuffer();
+    const preview = new TextDecoder().decode(new Uint8Array(buffer, 0, 4096));
+    const headerEnd = preview.indexOf('end_header');
+    if (headerEnd === -1) return { colors: null, uvs: null };
+    const headerText = preview.slice(0, headerEnd + 'end_header'.length);
+    if (!headerText.includes('binary_little_endian')) return { colors: null, uvs: null };
+    const lines = headerText.split(/\r?\n/);
+    let vertexCount = 0;
+    const props = [];
+    let inVertex = false;
+    const SIZES = { char:1,uchar:1,short:2,ushort:2,int:4,uint:4,float:4,double:8 };
+    for (const line of lines) {
+      const parts = line.trim().split(/\s+/);
+      if (parts[0]==='element'&&parts[1]==='vertex'){vertexCount=parseInt(parts[2]);inVertex=true;continue;}
+      if (parts[0]==='element'&&parts[1]!=='vertex'){inVertex=false;continue;}
+      if (inVertex&&parts[0]==='property'&&parts[1]!=='list') props.push({type:parts[1],name:parts[2]});
+    }
+    if (!vertexCount||!props.length) return { colors: null, uvs: null };
+    const hasDR = props.some(p=>p.name==='diffuse_red');
+    const hasR  = props.some(p=>p.name==='red');
+    const hasU  = props.some(p=>p.name==='texture_u'||p.name==='s');
+    const hasV  = props.some(p=>p.name==='texture_v'||p.name==='t');
+    if (!hasDR&&!hasR&&!hasU) return { colors: null, uvs: null };
+    const rawBytes = new Uint8Array(buffer);
+    const enc = new TextEncoder();
+    const markerNL = enc.encode('end_header\n');
+    const markerCR = enc.encode('end_header\r\n');
+    let dataOffset = -1;
+    for (let i=0;i<rawBytes.length-markerNL.length;i++) {
+      let mNL=true;
+      for (let j=0;j<markerNL.length;j++) if(rawBytes[i+j]!==markerNL[j]){mNL=false;break;}
+      if(mNL){dataOffset=i+markerNL.length;break;}
+      if(i<rawBytes.length-markerCR.length){
+        let mCR=true;
+        for(let j=0;j<markerCR.length;j++) if(rawBytes[i+j]!==markerCR[j]){mCR=false;break;}
+        if(mCR){dataOffset=i+markerCR.length;break;}
+      }
+    }
+    if (dataOffset===-1) return { colors: null, uvs: null };
+    let stride=0; const off={};
+    for (const p of props){off[p.name]=stride;stride+=(SIZES[p.type]||4);}
+    const view = new DataView(buffer, dataOffset);
+    const colors = (hasDR||hasR) ? new Float32Array(vertexCount*3) : null;
+    const uvs    = (hasU&&hasV)  ? new Float32Array(vertexCount*2) : null;
+    const rN=hasDR?'diffuse_red':'red', gN=hasDR?'diffuse_green':'green', bN=hasDR?'diffuse_blue':'blue';
+    const uN=props.find(p=>p.name==='texture_u')?'texture_u':'s';
+    const vN=props.find(p=>p.name==='texture_v')?'texture_v':'t';
+    for (let i=0;i<vertexCount;i++) {
+      const base=i*stride;
+      if(colors){colors[i*3]=view.getUint8(base+off[rN])/255;colors[i*3+1]=view.getUint8(base+off[gN])/255;colors[i*3+2]=view.getUint8(base+off[bN])/255;}
+      if(uvs){uvs[i*2]=view.getFloat32(base+off[uN],true);uvs[i*2+1]=view.getFloat32(base+off[vN],true);}
+    }
+    return { colors, uvs };
+  } catch { return { colors: null, uvs: null }; }
+}
+
+function normalizeVertexColors(geo) {
+  const col = geo.attributes.color;
+  if (!col) return false;
+  let max=0;
+  for(let i=0;i<Math.min(col.count,128);i++) max=Math.max(max,col.getX(i),col.getY(i),col.getZ(i));
+  if(max>1.5){const arr=col.array;for(let i=0;i<arr.length;i++)arr[i]/=255;col.needsUpdate=true;}
+  return true;
+}
+
 /**
  * Main 3D Dental Viewer — loads real STL/PLY scans and overlays
  * disease/treatment simulations on specific teeth.
@@ -236,17 +305,22 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
     };
 
     if (format === 'obj') {
-      const loader = new OBJLoader();
-      loader.load(url, (group) => {
-        // OBJLoader returns a Group of Meshes — merge or take first
+      new OBJLoader().load(url, (group) => {
         let merged = null;
-        group.traverse((child) => {
-          if (child.isMesh && !merged) merged = child.geometry;
-        });
+        group.traverse((child) => { if (child.isMesh && !merged) merged = child.geometry; });
         if (merged) finishGeo(merged);
       });
     } else if (format === 'ply') {
-      new PLYLoader().load(url, finishGeo);
+      extractPLYExtras(url).then(extras => {
+        new PLYLoader().load(url, (g) => {
+          if (extras?.colors && !(g.attributes.color?.count>0))
+            g.setAttribute('color', new THREE.BufferAttribute(extras.colors, 3));
+          if (extras?.uvs && !(g.attributes.uv?.count>0))
+            g.setAttribute('uv', new THREE.BufferAttribute(extras.uvs, 2));
+          normalizeVertexColors(g);
+          finishGeo(g);
+        });
+      }).catch(() => new PLYLoader().load(url, finishGeo));
     } else {
       new STLLoader().load(url, finishGeo);
     }
@@ -254,14 +328,14 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
 
   // ── Load color texture ──────────────────────────────────────
   useEffect(() => {
-    if (!textureUrl) {
-      setTexture(null);
-      return;
-    }
-    const loader = new THREE.TextureLoader();
-    loader.load(textureUrl, (tex) => {
+    if (!textureUrl) { setTexture(null); return; }
+    new THREE.TextureLoader().load(textureUrl, (tex) => {
       tex.colorSpace = THREE.SRGBColorSpace;
-      tex.flipY = false; // OBJ files use bottom-left origin
+      tex.flipY = true; // PLY UV coords use OpenGL convention — keep flipY=true
+      tex.wrapS = THREE.ClampToEdgeWrapping;
+      tex.wrapT = THREE.ClampToEdgeWrapping;
+      tex.minFilter = THREE.LinearMipmapLinearFilter;
+      tex.generateMipmaps = true;
       tex.anisotropy = 8;
       setTexture(tex);
     });
@@ -314,11 +388,11 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
       <mesh ref={meshRef} geometry={geometry} castShadow receiveShadow>
         <meshPhysicalMaterial
           color={hasRealColor ? '#ffffff' : styling.color}
-          map={texture && hasUVs ? texture : null}
-          vertexColors={hasVertexColors}
+          map={texture || null}
+          vertexColors={!texture && hasVertexColors}
           emissive={styling.emissive}
           emissiveIntensity={styling.emissiveIntensity * (hasRealColor ? 0.08 : 0.15)}
-          roughness={hasRealColor ? 0.55 : 0.4}
+          roughness={hasRealColor ? 0.45 : 0.4}
           metalness={0.04}
           clearcoat={hasRealColor ? 0.15 : 0.25}
           clearcoatRoughness={0.3}

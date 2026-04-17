@@ -14,6 +14,8 @@ export default function SimulationView() {
   const [scanUrl, setScanUrl] = useState(null);
   const [scanFormat, setScanFormat] = useState('stl');
   const [textureUrl, setTextureUrl] = useState(null);
+  const [textureName, setTextureName] = useState(null);
+  const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef(null);
   const textureInputRef = useRef(null);
 
@@ -54,15 +56,45 @@ export default function SimulationView() {
     setScanFormat(ext);
   }, []);
 
-  // Color texture upload (JPEG/PNG) — wraps the mesh with realistic color
-  const handleTextureUpload = useCallback((e) => {
-    const file = e.target.files?.[0];
+  const applyTextureFile = useCallback((file) => {
     if (!file) return;
     const ext = file.name.split('.').pop().toLowerCase();
     if (!['jpg', 'jpeg', 'png', 'webp'].includes(ext)) return;
-    const url = URL.createObjectURL(file);
-    setTextureUrl(url);
+    setTextureUrl(URL.createObjectURL(file));
+    setTextureName(file.name);
   }, []);
+
+  // Color texture upload (JPEG/PNG) — wraps the mesh with realistic color
+  const handleTextureUpload = useCallback((e) => {
+    applyTextureFile(e.target.files?.[0]);
+  }, [applyTextureFile]);
+
+  // Window-level drag-drop for JPEG (canvas swallows pointer events)
+  useEffect(() => {
+    const onDragOver  = (e) => { e.preventDefault(); setDragOver(true); };
+    const onDragLeave = (e) => { if (e.clientX === 0 && e.clientY === 0) setDragOver(false); };
+    const onDrop      = (e) => {
+      e.preventDefault();
+      setDragOver(false);
+      const file = e.dataTransfer?.files?.[0];
+      if (!file) return;
+      const ext = file.name.split('.').pop().toLowerCase();
+      if (['jpg','jpeg','png','webp'].includes(ext)) {
+        applyTextureFile(file);
+      } else if (['stl','ply','obj'].includes(ext)) {
+        setScanUrl(URL.createObjectURL(file));
+        setScanFormat(ext);
+      }
+    };
+    window.addEventListener('dragover',  onDragOver);
+    window.addEventListener('dragleave', onDragLeave);
+    window.addEventListener('drop',      onDrop);
+    return () => {
+      window.removeEventListener('dragover',  onDragOver);
+      window.removeEventListener('dragleave', onDragLeave);
+      window.removeEventListener('drop',      onDrop);
+    };
+  }, [applyTextureFile]);
 
   useEffect(() => {
     if (!autoPlay || !simulation?.states?.length) return;
@@ -86,7 +118,15 @@ export default function SimulationView() {
   }
 
   return (
-    <div className="flex flex-col h-full bg-surface-0">
+    <div className="flex flex-col h-full bg-surface-0 relative">
+      {/* Full-page drag-drop overlay */}
+      {dragOver && (
+        <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-black/80 border-2 border-dashed border-lume-400 pointer-events-none">
+          <ImageIcon size={40} className="text-lume-400 mb-3" />
+          <p className="text-white font-semibold text-base">Drop colour JPEG to apply</p>
+          <p className="text-gray-400 text-sm mt-1">Texture atlas from your scanner</p>
+        </div>
+      )}
       {/* Header */}
       <div className="bg-surface-1 border-b border-white/5 px-6 py-3">
         <div className="flex items-center justify-between">
@@ -117,11 +157,11 @@ export default function SimulationView() {
             <input ref={textureInputRef} type="file" accept=".jpg,.jpeg,.png,.webp" className="hidden" onChange={handleTextureUpload} />
             <button onClick={() => textureInputRef.current?.click()}
               className={`flex items-center gap-1.5 text-[11px] px-3 py-1.5 rounded-lg border transition ${
-                textureUrl ? 'border-pink-500/20 text-pink-400 bg-pink-500/5' : 'border-white/10 text-gray-400 hover:text-white hover:bg-white/5'
+                textureUrl ? 'border-green-500/20 text-green-400 bg-green-500/5' : 'border-white/10 text-gray-400 hover:text-white hover:bg-white/5'
               }`}
-              title="Color texture (JPEG/PNG) — requires OBJ mesh with UVs">
+              title="Drop JPEG anywhere or click to pick">
               <ImageIcon size={12} />
-              {textureUrl ? 'Color Loaded' : 'Add Color (JPEG)'}
+              {textureName ? `✓ ${textureName}` : 'Drop Colour JPEG'}
             </button>
             {simulation.target_teeth?.length > 0 && (
               <div className="flex items-center gap-1.5">
