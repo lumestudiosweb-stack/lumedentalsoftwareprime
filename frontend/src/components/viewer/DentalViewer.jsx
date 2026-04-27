@@ -5,7 +5,9 @@ import * as THREE from 'three';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
+import { DecalGeometry } from 'three/examples/jsm/geometries/DecalGeometry.js';
 import ToothOverlay, { RealisticTooth } from './ToothOverlay';
+import ToothProgressionPopup from './ToothProgressionPopup';
 
 /* ── Same PLY UV extractor as ScanPreview3D ─────────────────── */
 async function extractPLYExtras(url) {
@@ -259,8 +261,203 @@ function applyProceduralDentalColors(geo) {
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 }
 
+/* ──────────────────────────────────────────────────────────────────────
+   makeStainTexture — procedurally renders a 2D pathology/treatment patch
+   to a canvas, returns a CanvasTexture suitable for projecting as a DECAL
+   onto the real scan mesh. The decal wraps to the tooth's actual surface
+   so the stain looks BAKED IN, not glued on top.
+
+   Inspired by the clinical look of dental textbook photos: dark brown
+   organic stain following the fissures for caries, smooth tooth-colored
+   patch for composite fillings, glossy ceramic for crowns, etc.
+─────────────────────────────────────────────────────────────────────── */
+function makeStainTexture(kind, stage, treatment) {
+  const SIZE = 512;
+  const canvas = document.createElement('canvas');
+  canvas.width = SIZE;
+  canvas.height = SIZE;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, SIZE, SIZE);
+  const cx = SIZE / 2, cy = SIZE / 2;
+
+  // Helper — a jagged dark line radiating from center, like a stained fissure
+  const drawFissure = (angle, length, width, color) => {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    let x = cx, y = cy;
+    const steps = 14;
+    for (let s = 1; s <= steps; s++) {
+      const t = s / steps;
+      const r = length * t;
+      const a = angle + (Math.random() - 0.5) * 0.45;
+      const wobble = (Math.random() - 0.5) * 22 * (1 - t);
+      x = cx + Math.cos(a) * r + wobble;
+      y = cy + Math.sin(a) * r + wobble;
+      ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  };
+
+  // ── CARIES — dark brown organic stain that LOOKS like decay in fissures
+  if (kind === 'caries') {
+    const palettes = {
+      enamel:      { core: 'rgba(110,75,30,0.85)', mid: 'rgba(135,90,45,0.7)',  edge: 'rgba(170,130,80,0.0)' },
+      dentin:      { core: 'rgba(35,15,4,0.96)',   mid: 'rgba(75,38,14,0.88)',  edge: 'rgba(120,70,30,0.0)' },
+      deep_dentin: { core: 'rgba(12,4,0,0.98)',    mid: 'rgba(45,18,4,0.92)',   edge: 'rgba(100,55,20,0.0)' },
+      pulp:        { core: 'rgba(0,0,0,1)',        mid: 'rgba(40,8,5,0.95)',    edge: 'rgba(95,35,15,0.0)' },
+      abscess:     { core: 'rgba(0,0,0,1)',        mid: 'rgba(80,15,5,0.95)',   edge: 'rgba(160,40,20,0.0)' },
+    };
+    const pal = palettes[stage] || palettes.dentin;
+
+    // Outer halo — soft brown shadow
+    const grad = ctx.createRadialGradient(cx, cy, 6, cx, cy, SIZE * 0.42);
+    grad.addColorStop(0,   pal.core);
+    grad.addColorStop(0.4, pal.mid);
+    grad.addColorStop(1,   pal.edge);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, SIZE, SIZE);
+
+    // Branching dark fissures — like decay tracking along grooves
+    const numFissures = stage === 'enamel' ? 4 : 7;
+    for (let i = 0; i < numFissures; i++) {
+      const angle = (i / numFissures) * Math.PI * 2 + Math.random() * 0.6;
+      const len = SIZE * (0.20 + Math.random() * 0.20);
+      const w = 9 + Math.random() * 14;
+      drawFissure(angle, len, w, pal.core);
+      // Inner darker streak inside the fissure
+      drawFissure(angle, len * 0.7, w * 0.45, pal.core);
+    }
+
+    // Re-darken the very center for depth
+    const grad2 = ctx.createRadialGradient(cx, cy, 0, cx, cy, SIZE * 0.18);
+    grad2.addColorStop(0, pal.core);
+    grad2.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = grad2;
+    ctx.fillRect(0, 0, SIZE, SIZE);
+
+    // Scattered specks of darker decay
+    ctx.fillStyle = pal.core;
+    for (let i = 0; i < 35; i++) {
+      const r = SIZE * 0.05 + Math.random() * SIZE * 0.32;
+      const a = Math.random() * Math.PI * 2;
+      ctx.beginPath();
+      ctx.arc(cx + Math.cos(a) * r, cy + Math.sin(a) * r, 1 + Math.random() * 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Pulp/abscess — angry red glow at the center
+    if (stage === 'pulp' || stage === 'abscess') {
+      const rg = ctx.createRadialGradient(cx, cy, 0, cx, cy, SIZE * 0.10);
+      rg.addColorStop(0, 'rgba(220,30,20,0.9)');
+      rg.addColorStop(1, 'rgba(220,30,20,0)');
+      ctx.fillStyle = rg;
+      ctx.fillRect(0, 0, SIZE, SIZE);
+    }
+  }
+  // ── COMPOSITE FILLING / INLAY / VENEER / SEALANT — tooth-colored smooth patch
+  else if (kind === 'composite_filling' || kind === 'inlay' || kind === 'veneer' || kind === 'sealant') {
+    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, SIZE * 0.45);
+    grad.addColorStop(0,    'rgba(248,235,200,0.97)');
+    grad.addColorStop(0.7,  'rgba(232,212,170,0.92)');
+    grad.addColorStop(0.92, 'rgba(190,160,115,0.55)');
+    grad.addColorStop(1,    'rgba(160,130,90,0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, SIZE, SIZE);
+    // Subtle margin ring (the bond line)
+    ctx.strokeStyle = 'rgba(110,80,50,0.5)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(cx, cy, SIZE * 0.42, 0, Math.PI * 2);
+    ctx.stroke();
+    // Tiny highlight
+    const hi = ctx.createRadialGradient(cx - 50, cy - 50, 0, cx - 50, cy - 50, SIZE * 0.16);
+    hi.addColorStop(0, 'rgba(255,255,255,0.35)');
+    hi.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = hi;
+    ctx.fillRect(0, 0, SIZE, SIZE);
+  }
+  // ── AMALGAM — dark silvery patch
+  else if (kind === 'amalgam') {
+    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, SIZE * 0.45);
+    grad.addColorStop(0,    'rgba(70,72,78,0.98)');
+    grad.addColorStop(0.6,  'rgba(48,50,56,0.95)');
+    grad.addColorStop(0.92, 'rgba(28,28,32,0.7)');
+    grad.addColorStop(1,    'rgba(20,20,25,0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, SIZE, SIZE);
+    // Metallic noise
+    for (let i = 0; i < 240; i++) {
+      const x = Math.random() * SIZE, y = Math.random() * SIZE;
+      const dx = x - cx, dy = y - cy;
+      if (dx * dx + dy * dy > (SIZE * 0.42) ** 2) continue;
+      ctx.fillStyle = `rgba(150,155,165,${0.04 + Math.random() * 0.12})`;
+      ctx.fillRect(x, y, 1, 1);
+    }
+  }
+  // ── CROWN (any) — bright glossy ceramic or metal cap
+  else if (kind === 'metal_crown' || kind === 'all_ceramic_crown' || kind === 'pfm_crown') {
+    const isMetal = kind === 'metal_crown';
+    const grad = ctx.createRadialGradient(cx - 40, cy - 40, 0, cx, cy, SIZE * 0.5);
+    if (isMetal) {
+      grad.addColorStop(0,    'rgba(245,245,250,1)');
+      grad.addColorStop(0.5,  'rgba(180,185,195,1)');
+      grad.addColorStop(0.85, 'rgba(120,125,135,0.85)');
+      grad.addColorStop(1,    'rgba(90,95,105,0)');
+    } else {
+      grad.addColorStop(0,    'rgba(255,250,238,1)');
+      grad.addColorStop(0.5,  'rgba(245,235,212,1)');
+      grad.addColorStop(0.85, 'rgba(220,205,175,0.9)');
+      grad.addColorStop(1,    'rgba(195,175,140,0)');
+    }
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, SIZE, SIZE);
+    // Specular highlight
+    const hi = ctx.createRadialGradient(cx - 70, cy - 70, 0, cx - 70, cy - 70, SIZE * 0.2);
+    hi.addColorStop(0, 'rgba(255,255,255,0.55)');
+    hi.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = hi;
+    ctx.fillRect(0, 0, SIZE, SIZE);
+  }
+  // ── ROOT CANAL — rust/orange sealed access cavity
+  else if (kind === 'rct') {
+    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, SIZE * 0.45);
+    grad.addColorStop(0,    'rgba(135,68,28,0.96)');
+    grad.addColorStop(0.6,  'rgba(165,90,42,0.9)');
+    grad.addColorStop(0.92, 'rgba(180,130,80,0.5)');
+    grad.addColorStop(1,    'rgba(180,130,80,0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, SIZE, SIZE);
+    // Dark center — the sealed access opening
+    const dark = ctx.createRadialGradient(cx, cy, 0, cx, cy, SIZE * 0.13);
+    dark.addColorStop(0, 'rgba(40,15,5,0.95)');
+    dark.addColorStop(1, 'rgba(40,15,5,0)');
+    ctx.fillStyle = dark;
+    ctx.fillRect(0, 0, SIZE, SIZE);
+  }
+  // ── EXTRACTION — dark red socket
+  else if (kind === 'extraction') {
+    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, SIZE * 0.45);
+    grad.addColorStop(0,    'rgba(20,5,5,1)');
+    grad.addColorStop(0.4,  'rgba(70,20,15,0.95)');
+    grad.addColorStop(0.85, 'rgba(140,55,40,0.6)');
+    grad.addColorStop(1,    'rgba(180,90,75,0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, SIZE, SIZE);
+  }
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+  return tex;
+}
+
 function TreatmentJourney({ url, format, textureUrl, simulation, activeStateIndex, clinicalPathology, pickedTooth }) {
   const meshRef = useRef();
+  const [scanMesh, setScanMesh] = useState(null);
   const [geometry, setGeometry] = useState(null);
   const [bbox, setBbox] = useState(null);
   const [hasUVs, setHasUVs] = useState(false);
@@ -363,6 +560,7 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
   // ── Click-to-place overlay ──
   const [markerPos, setMarkerPos] = useState(null);
   const [markerNormal, setMarkerNormal] = useState(null);
+  const [popupOpen, setPopupOpen] = useState(true);
 
   const handleClickScan = (e) => {
     e.stopPropagation();
@@ -379,7 +577,8 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
       setMarkerPos(null);
       setMarkerNormal(null);
     }
-  }, [clinicalPathology?.kind]);
+    setPopupOpen(true);
+  }, [clinicalPathology?.kind, clinicalPathology?.depth, pickedTooth]);
 
   // ── Texture imperatively applied ──
   useEffect(() => {
@@ -409,7 +608,7 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
     <group>
       {/* The scan mesh */}
       <mesh
-        ref={meshRef}
+        ref={(m) => { meshRef.current = m; if (m !== scanMesh) setScanMesh(m); }}
         geometry={geometry}
         castShadow
         receiveShadow
@@ -460,16 +659,55 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
         </Html>
       )}
 
-      {/* 3D treatment overlay — auto-placed or click-placed */}
-      {markerPos && markerNormal && (
-        <TreatmentOverlay
+      {/* Pathology decal — projected onto the actual scan surface so it
+          looks baked into the tooth, not glued on top. */}
+      {markerPos && markerNormal && scanMesh && clinicalPathology?.kind && (
+        <PathologyDecal
+          mesh={scanMesh}
           position={markerPos}
           normal={markerNormal}
-          size={overlaySize}
+          size={overlaySize * 1.6}
+          kind={clinicalPathology.kind}
           stage={effectiveStage}
           treatment={effectiveTreatment}
           pulsing={isPulsing}
         />
+      )}
+
+      {/* Disease → treatment progression popup, anchored next to the
+          clicked tooth on the scan. Animates the full pathway:
+          enamel → dentin → pulp → canals → periapex → endo treatment
+          → gutta-percha → crown. Root anatomy varies by FDI tooth #. */}
+      {markerPos && pickedTooth && clinicalPathology?.kind && popupOpen && (
+        <Html position={markerPos} style={{ pointerEvents: 'none', transform: 'translate(40px, -50%)' }} zIndexRange={[100, 0]}>
+          <ToothProgressionPopup
+            tooth={pickedTooth}
+            pathology={clinicalPathology}
+            onClose={() => setPopupOpen(false)}
+          />
+        </Html>
+      )}
+
+      {/* Re-open popup tab if closed */}
+      {markerPos && pickedTooth && clinicalPathology?.kind && !popupOpen && (
+        <Html position={markerPos} style={{ pointerEvents: 'auto', transform: 'translate(40px, -50%)' }}>
+          <button
+            onClick={() => setPopupOpen(true)}
+            style={{
+              padding: '6px 12px',
+              fontSize: 11,
+              fontWeight: 600,
+              color: '#fff',
+              background: 'rgba(220,38,38,0.85)',
+              border: '1px solid rgba(255,255,255,0.15)',
+              borderRadius: 6,
+              cursor: 'pointer',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
+            }}
+          >
+            ▶ Show progression
+          </button>
+        </Html>
       )}
 
       {/* Simulation timeline card — only when no clinical override */}
@@ -510,128 +748,84 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
 }
 
 /* ──────────────────────────────────────────────────────────────────────
-   TreatmentOverlay — actual 3D anatomical treatment that appears on the
-   tooth surface and morphs based on the current stage.
+   PathologyDecal — projects a 2D procedural stain texture onto the actual
+   scan mesh using THREE.DecalGeometry. The decal wraps to the tooth's
+   real surface curvature so the cavity/filling/crown looks BAKED INTO the
+   scan, not floating on top.
 
-   Stages:
-     • healthy     → nothing
-     • enamel      → small brown demineralization spot
-     • dentin      → bigger dark brown cavity (irregular shape)
-     • pulp        → black hole reaching down with red glow inside
-     • abscess     → dark hole + red inflamed aura
-     • restored / composite_filling → smooth white composite dome
-     • zirconia_crown / rct_crown   → shiny silver-white crown cap
-     • root_canal  → rust-colored sealed cavity
+   Material properties switch by pathology kind:
+     • caries       → matte rough dark brown stain
+     • amalgam      → dark metallic
+     • crowns       → glossy ceramic/metal
+     • composite    → tooth-colored matte
+     • rct          → matte rust
+     • extraction   → matte dark red socket
 ─────────────────────────────────────────────────────────────────────── */
-/**
- * Clinical annotation marker on the scan — NOT a 3D ball.
- *
- * Why this design:
- *   A patient scan is an unsegmented mesh — we don't know which polygons
- *   belong to which tooth. Trying to render a "cavity" or "crown" as 3D
- *   geometry on top of the scan produces fake-looking marbles glued to
- *   teeth. That's how it looked before.
- *
- *   Real clinical software (Pearl, Overjet, Videa) annotates the scan
- *   with 2D-style pins + labels and shows the realistic 3D pathology
- *   in a SEPARATE anatomy panel. That's what this does.
- *
- * What renders:
- *   - A flat colored ring on the surface (where the dentist clicked)
- *   - A small pin sticking out toward the camera with the diagnosis
- *   - An animated pulse ring that fades outward
- */
-function TreatmentOverlay({ position, normal, size, stage, treatment, pulsing }) {
-  const ringRef = useRef();
-  const pulseRef = useRef();
+function PathologyDecal({ mesh, position, normal, size, kind, stage, treatment, pulsing }) {
+  const matRef = useRef();
 
-  // Orient: +Y in local space = surface normal
-  const quaternion = useMemo(() => {
-    const q = new THREE.Quaternion();
-    const up = new THREE.Vector3(0, 1, 0);
-    const n = new THREE.Vector3(...normal).normalize();
-    q.setFromUnitVectors(up, n);
-    return q;
-  }, [normal]);
+  // Procedural stain texture — re-baked when the diagnosis changes
+  const texture = useMemo(
+    () => makeStainTexture(kind, stage, treatment),
+    [kind, stage, treatment]
+  );
 
-  // Push very slightly off the surface to avoid z-fighting with the ring
-  const offset = useMemo(() => {
-    const n = new THREE.Vector3(...normal).normalize().multiplyScalar(size * 0.02);
-    return [position[0] + n.x, position[1] + n.y, position[2] + n.z];
-  }, [position, normal, size]);
+  // Decal geometry — projected from `position` along `normal`, conforming
+  // to the scan mesh's actual curvature.
+  const decalGeometry = useMemo(() => {
+    if (!mesh || !mesh.geometry) return null;
+    try {
+      const pos = new THREE.Vector3(...position);
+      const n = new THREE.Vector3(...normal).normalize();
 
-  // Color by clinical category
-  const accent = (() => {
-    if (treatment === 'metal_crown' || treatment === 'zirconia_crown' ||
-        treatment === 'all_ceramic_crown' || treatment === 'rct_crown' ||
-        stage === 'restored') return '#3b82f6';                // blue — restorative
-    if (treatment === 'composite_filling') return '#10b981';   // green — filling
-    if (treatment === 'root_canal') return '#f97316';          // orange — endo
-    if (stage === 'enamel') return '#fbbf24';                  // yellow
-    if (stage === 'dentin') return '#f97316';                  // orange
-    if (stage === 'pulp')   return '#ef4444';                  // red
-    if (stage === 'abscess') return '#dc2626';                 // dark red
-    if (stage === 'extracted') return '#6b7280';               // gray
-    return '#94a3b8';
-  })();
+      // Build orientation: align the decal projector's +Z with the surface normal
+      const lookTarget = pos.clone().add(n);
+      const up = Math.abs(n.y) > 0.95 ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(0, 1, 0);
+      const m = new THREE.Matrix4().lookAt(pos, lookTarget, up);
+      const orientation = new THREE.Euler().setFromRotationMatrix(m);
 
-  // Animated outer pulse ring
-  useFrameImpl(({ clock }) => {
-    if (pulseRef.current) {
-      const t = clock.elapsedTime;
-      const speed = pulsing ? 2.5 : 1.4;
-      const cycle = (t * speed) % 1;          // 0 → 1 repeating
-      const scale = 1 + cycle * 1.3;          // grows outward
-      pulseRef.current.scale.set(scale, scale, scale);
-      pulseRef.current.material.opacity = (1 - cycle) * 0.55;
+      // Decal projector size — covers roughly one occlusal tooth surface
+      const s = size;
+      const decalSize = new THREE.Vector3(s, s, s * 1.2);
+      return new DecalGeometry(mesh, pos, orientation, decalSize);
+    } catch {
+      return null;
     }
-    if (ringRef.current && pulsing) {
-      const t = clock.elapsedTime;
-      ringRef.current.material.opacity = 0.85 + Math.sin(t * 3) * 0.15;
+  }, [mesh, position, normal, size, kind, stage, treatment]);
+
+  // Subtle pulse for active disease (pulp / abscess) — fades opacity
+  useFrameImpl(({ clock }) => {
+    if (!matRef.current) return;
+    if (pulsing) {
+      matRef.current.opacity = 0.85 + Math.sin(clock.elapsedTime * 2.4) * 0.15;
+    } else {
+      matRef.current.opacity = 1;
     }
   });
 
-  // Marker disc sized in mesh units — ~one tooth width
-  const ringInner = size * 0.55;
-  const ringOuter = size * 0.78;
-  const dotRadius = size * 0.18;
+  if (!decalGeometry) return null;
+
+  // Material props per category
+  const isCaries  = kind === 'caries';
+  const isMetal   = kind === 'metal_crown' || kind === 'amalgam';
+  const isGlossy  = kind === 'metal_crown' || kind === 'all_ceramic_crown' || kind === 'pfm_crown';
 
   return (
-    <group position={offset} quaternion={quaternion}>
-      {/* Solid filled dot at the center */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.001, 0]}>
-        <circleGeometry args={[dotRadius, 24]} />
-        <meshBasicMaterial color={accent} transparent opacity={0.92} side={THREE.DoubleSide} depthTest={false} />
-      </mesh>
-
-      {/* Clean colored ring outline */}
-      <mesh ref={ringRef} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.002, 0]}>
-        <ringGeometry args={[ringInner, ringOuter, 48]} />
-        <meshBasicMaterial color={accent} transparent opacity={0.85} side={THREE.DoubleSide} depthTest={false} />
-      </mesh>
-
-      {/* Animated outer pulse — radiates out and fades */}
-      <mesh ref={pulseRef} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.0015, 0]}>
-        <ringGeometry args={[ringOuter, ringOuter * 1.15, 48]} />
-        <meshBasicMaterial color={accent} transparent opacity={0.5} side={THREE.DoubleSide} depthTest={false} />
-      </mesh>
-
-      {/* Crosshair lines through the dot — like clinical software */}
-      <Line
-        points={[[-ringOuter * 1.4, 0.003, 0], [ringOuter * 1.4, 0.003, 0]]}
-        color={accent}
-        lineWidth={1}
+    <mesh geometry={decalGeometry} renderOrder={2}>
+      <meshStandardMaterial
+        ref={matRef}
+        map={texture}
         transparent
-        opacity={0.45}
+        depthTest
+        depthWrite={false}
+        polygonOffset
+        polygonOffsetFactor={-4}
+        polygonOffsetUnits={-4}
+        roughness={isCaries ? 0.95 : isGlossy ? 0.18 : isMetal ? 0.35 : 0.45}
+        metalness={isMetal ? 0.85 : 0}
+        side={THREE.FrontSide}
       />
-      <Line
-        points={[[0, 0.003, -ringOuter * 1.4], [0, 0.003, ringOuter * 1.4]]}
-        color={accent}
-        lineWidth={1}
-        transparent
-        opacity={0.45}
-      />
-    </group>
+    </mesh>
   );
 }
 
