@@ -86,42 +86,112 @@ function normalizeVertexColors(geo) {
  * down into the mouth — like a patient in the chair.
  */
 export default function DentalViewer({ scanUrl, scanFormat, simulation, activeStateIndex, textureUrl, clinicalPathology, pickedTooth }) {
+  const [popupHidden, setPopupHidden] = useState(false);
+
+  // ── Derive a pathology context from EITHER picker (manual) or
+  // ── simulation timeline (auto). The progression popup uses this so it
+  // ── always shows whenever there's a clinical context to visualize.
+  const activeState = simulation?.states?.[activeStateIndex] || null;
+  const simStage = activeState?.clinical_metrics?.stage;
+  const simTreatment = activeState?.clinical_metrics?.treatment;
+
+  const effectivePathology = useMemo(() => {
+    if (clinicalPathology?.kind) return clinicalPathology;
+    // Map simulation timeline state → progression popup pathology
+    if (simTreatment === 'root_canal' || simStage === 'endodontic')
+      return { kind: 'rct', depth: 'pulp_exposure' };
+    if (simTreatment === 'rct_crown')
+      return { kind: 'all_ceramic_crown', depth: 'pulp_exposure' };
+    if (simTreatment === 'zirconia_crown' || simTreatment === 'all_ceramic_crown' || simStage === 'restored')
+      return { kind: 'all_ceramic_crown', depth: null };
+    if (simTreatment === 'metal_crown') return { kind: 'metal_crown', depth: null };
+    if (simTreatment === 'composite_filling') return { kind: 'composite_filling', depth: 'dentin' };
+    if (simStage === 'enamel') return { kind: 'caries', depth: 'enamel' };
+    if (simStage === 'dentin') return { kind: 'caries', depth: 'dentin' };
+    if (simStage === 'pulp')   return { kind: 'caries', depth: 'pulp_exposure' };
+    if (simStage === 'abscess')return { kind: 'caries', depth: 'pulp_exposure' };
+    if (simStage === 'extracted') return { kind: 'extraction' };
+    return null;
+  }, [clinicalPathology, simStage, simTreatment]);
+
+  const effectiveTooth = pickedTooth ?? simulation?.target_teeth?.[0] ?? null;
+  const showPopup = !!(effectivePathology && effectiveTooth) && !popupHidden;
+
+  // Whenever the source pathology / tooth changes, force the popup back open
+  useEffect(() => {
+    setPopupHidden(false);
+  }, [effectivePathology?.kind, effectivePathology?.depth, effectiveTooth]);
+
   return (
-    <Canvas
-      camera={{ position: [0, 14, 42], fov: 34, near: 0.1, far: 1000 }}
-      gl={{ antialias: true, toneMapping: THREE.ACESFilmicToneMapping, toneMappingExposure: 1.1 }}
-      shadows
-      style={{ background: '#000' }}
-    >
-      <color attach="background" args={['#000000']} />
+    <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+      <Canvas
+        camera={{ position: [0, 14, 42], fov: 34, near: 0.1, far: 1000 }}
+        gl={{ antialias: true, toneMapping: THREE.ACESFilmicToneMapping, toneMappingExposure: 1.1 }}
+        shadows
+        style={{ background: '#000' }}
+      >
+        <color attach="background" args={['#000000']} />
 
-      {/* Clinical lighting */}
-      <ambientLight intensity={0.5} />
-      <directionalLight position={[10, 30, 20]} intensity={1.4} castShadow shadow-mapSize={[2048, 2048]} color="#fff" />
-      <directionalLight position={[-10, 20, -15]} intensity={0.55} color="#eef" />
-      <spotLight position={[0, 40, 5]} intensity={0.8} angle={0.5} penumbra={0.5} color="#fff" />
-      <pointLight position={[0, -10, 25]} intensity={0.35} color="#ffeedd" />
-      <pointLight position={[20, 5, -10]} intensity={0.28} color="#aaccff" />
-      <pointLight position={[-20, 5, -10]} intensity={0.28} color="#aaccff" />
+        {/* Clinical lighting */}
+        <ambientLight intensity={0.5} />
+        <directionalLight position={[10, 30, 20]} intensity={1.4} castShadow shadow-mapSize={[2048, 2048]} color="#fff" />
+        <directionalLight position={[-10, 20, -15]} intensity={0.55} color="#eef" />
+        <spotLight position={[0, 40, 5]} intensity={0.8} angle={0.5} penumbra={0.5} color="#fff" />
+        <pointLight position={[0, -10, 25]} intensity={0.35} color="#ffeedd" />
+        <pointLight position={[20, 5, -10]} intensity={0.28} color="#aaccff" />
+        <pointLight position={[-20, 5, -10]} intensity={0.28} color="#aaccff" />
 
-      <Suspense fallback={<LoadingIndicator />}>
-        {scanUrl ? (
-          <TreatmentJourney url={scanUrl} format={scanFormat} textureUrl={textureUrl} simulation={simulation} activeStateIndex={activeStateIndex} clinicalPathology={clinicalPathology} pickedTooth={pickedTooth} />
-        ) : (
-          <PlaceholderArch simulation={simulation} activeStateIndex={activeStateIndex} clinicalPathology={clinicalPathology} pickedTooth={pickedTooth} />
-        )}
-      </Suspense>
+        <Suspense fallback={<LoadingIndicator />}>
+          {scanUrl ? (
+            <TreatmentJourney url={scanUrl} format={scanFormat} textureUrl={textureUrl} simulation={simulation} activeStateIndex={activeStateIndex} clinicalPathology={effectivePathology} pickedTooth={effectiveTooth} />
+          ) : (
+            <PlaceholderArch simulation={simulation} activeStateIndex={activeStateIndex} clinicalPathology={effectivePathology} pickedTooth={effectiveTooth} />
+          )}
+        </Suspense>
 
-      <OrbitControls
-        enableDamping
-        dampingFactor={0.08}
-        minDistance={15}
-        maxDistance={150}
-        maxPolarAngle={Math.PI * 0.85}
-        target={[0, 0, 0]}
-      />
-      <Environment preset="studio" environmentIntensity={0.5} />
-    </Canvas>
+        <OrbitControls
+          enableDamping
+          dampingFactor={0.08}
+          minDistance={15}
+          maxDistance={150}
+          maxPolarAngle={Math.PI * 0.85}
+          target={[0, 0, 0]}
+        />
+        <Environment preset="studio" environmentIntensity={0.5} />
+      </Canvas>
+
+      {/* Progression popup — always visible when any pathology/treatment is set,
+          pinned to the top-right of the viewer so it doesn't depend on
+          clicking the right tooth on an unsegmented scan. */}
+      {showPopup && (
+        <div style={{ position: 'absolute', top: 16, right: 16, zIndex: 30, maxWidth: '50%' }}>
+          <ToothProgressionPopup
+            tooth={effectiveTooth}
+            pathology={effectivePathology}
+            onClose={() => setPopupHidden(true)}
+          />
+        </div>
+      )}
+
+      {/* Show-progression chip when popup is dismissed */}
+      {!showPopup && effectivePathology && effectiveTooth && (
+        <button
+          onClick={() => setPopupHidden(false)}
+          style={{
+            position: 'absolute', top: 16, right: 16, zIndex: 30,
+            padding: '8px 14px',
+            fontSize: 12, fontWeight: 700, color: '#fff',
+            background: 'linear-gradient(135deg, #dc2626, #b91c1c)',
+            border: '1px solid rgba(255,255,255,0.15)',
+            borderRadius: 8,
+            cursor: 'pointer',
+            boxShadow: '0 6px 18px rgba(220,38,38,0.4), 0 0 24px rgba(220,38,38,0.2)',
+          }}
+        >
+          ▶ Show Tooth #{effectiveTooth} Progression
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -560,7 +630,6 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
   // ── Click-to-place overlay ──
   const [markerPos, setMarkerPos] = useState(null);
   const [markerNormal, setMarkerNormal] = useState(null);
-  const [popupOpen, setPopupOpen] = useState(true);
 
   const handleClickScan = (e) => {
     e.stopPropagation();
@@ -577,7 +646,6 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
       setMarkerPos(null);
       setMarkerNormal(null);
     }
-    setPopupOpen(true);
   }, [clinicalPathology?.kind, clinicalPathology?.depth, pickedTooth]);
 
   // ── Texture imperatively applied ──
@@ -674,41 +742,9 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
         />
       )}
 
-      {/* Disease → treatment progression popup, anchored next to the
-          clicked tooth on the scan. Animates the full pathway:
-          enamel → dentin → pulp → canals → periapex → endo treatment
-          → gutta-percha → crown. Root anatomy varies by FDI tooth #. */}
-      {markerPos && pickedTooth && clinicalPathology?.kind && popupOpen && (
-        <Html position={markerPos} style={{ pointerEvents: 'none', transform: 'translate(40px, -50%)' }} zIndexRange={[100, 0]}>
-          <ToothProgressionPopup
-            tooth={pickedTooth}
-            pathology={clinicalPathology}
-            onClose={() => setPopupOpen(false)}
-          />
-        </Html>
-      )}
-
-      {/* Re-open popup tab if closed */}
-      {markerPos && pickedTooth && clinicalPathology?.kind && !popupOpen && (
-        <Html position={markerPos} style={{ pointerEvents: 'auto', transform: 'translate(40px, -50%)' }}>
-          <button
-            onClick={() => setPopupOpen(true)}
-            style={{
-              padding: '6px 12px',
-              fontSize: 11,
-              fontWeight: 600,
-              color: '#fff',
-              background: 'rgba(220,38,38,0.85)',
-              border: '1px solid rgba(255,255,255,0.15)',
-              borderRadius: 6,
-              cursor: 'pointer',
-              boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
-            }}
-          >
-            ▶ Show progression
-          </button>
-        </Html>
-      )}
+      {/* Progression popup is rendered at the DentalViewer level
+          (outside the Canvas) so it shows whether or not the user has
+          clicked a tooth — driven by simulation state + picker state. */}
 
       {/* Simulation timeline card — only when no clinical override */}
       {activeState && !hasClinical && (
