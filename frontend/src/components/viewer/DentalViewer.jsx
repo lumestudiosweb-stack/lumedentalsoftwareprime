@@ -5,7 +5,6 @@ import * as THREE from 'three';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
-import { DecalGeometry } from 'three/examples/jsm/geometries/DecalGeometry.js';
 import ToothOverlay, { RealisticTooth } from './ToothOverlay';
 import ToothProgressionPopup from './ToothProgressionPopup';
 
@@ -85,42 +84,46 @@ function normalizeVertexColors(geo) {
  * Camera positioned for a front-facing clinical view looking slightly
  * down into the mouth — like a patient in the chair.
  */
-export default function DentalViewer({ scanUrl, scanFormat, simulation, activeStateIndex, textureUrl, clinicalPathology, pickedTooth }) {
-  const [popupHidden, setPopupHidden] = useState(false);
+/* ── Stage → pathology mapping for the progression popup ─────── */
+function stageToPathology(stage, treatment) {
+  if (!stage || stage === 'initial' || stage === 'healthy') return null;
+  if (treatment === 'root_canal' || stage === 'endodontic') return { kind: 'rct', depth: 'pulp_exposure' };
+  if (treatment === 'zirconia_crown' || treatment === 'ceramic_crown') return { kind: 'zirconia_crown', depth: 'pulp_exposure' };
+  if (treatment === 'composite_filling' || stage === 'restored') return { kind: 'composite_filling', depth: 'dentin' };
+  if (stage === 'abscess') return { kind: 'caries', depth: 'pulp_exposure' };
+  if (stage === 'pulp') return { kind: 'caries', depth: 'pulp_exposure' };
+  if (stage === 'dentin') return { kind: 'caries', depth: 'dentin' };
+  if (stage === 'enamel') return { kind: 'caries', depth: 'enamel' };
+  return null;
+}
 
-  // ── Derive a pathology context from EITHER picker (manual) or
-  // ── simulation timeline (auto). The progression popup uses this so it
-  // ── always shows whenever there's a clinical context to visualize.
+export default function DentalViewer({ scanUrl, scanFormat, simulation, activeStateIndex, textureUrl, dentistPathology, pickedTooth }) {
+  const [popupDismissed, setPopupDismissed] = useState(false);
+
+  // Re-open popup whenever the simulation stage changes meaningfully
   const activeState = simulation?.states?.[activeStateIndex] || null;
   const simStage = activeState?.clinical_metrics?.stage;
   const simTreatment = activeState?.clinical_metrics?.treatment;
 
-  const effectivePathology = useMemo(() => {
-    if (clinicalPathology?.kind) return clinicalPathology;
-    // Map simulation timeline state → progression popup pathology
-    if (simTreatment === 'root_canal' || simStage === 'endodontic')
-      return { kind: 'rct', depth: 'pulp_exposure' };
-    if (simTreatment === 'rct_crown')
-      return { kind: 'all_ceramic_crown', depth: 'pulp_exposure' };
-    if (simTreatment === 'zirconia_crown' || simTreatment === 'all_ceramic_crown' || simStage === 'restored')
-      return { kind: 'all_ceramic_crown', depth: null };
-    if (simTreatment === 'metal_crown') return { kind: 'metal_crown', depth: null };
-    if (simTreatment === 'composite_filling') return { kind: 'composite_filling', depth: 'dentin' };
-    if (simStage === 'enamel') return { kind: 'caries', depth: 'enamel' };
-    if (simStage === 'dentin') return { kind: 'caries', depth: 'dentin' };
-    if (simStage === 'pulp')   return { kind: 'caries', depth: 'pulp_exposure' };
-    if (simStage === 'abscess')return { kind: 'caries', depth: 'pulp_exposure' };
-    if (simStage === 'extracted') return { kind: 'extraction' };
-    return null;
-  }, [clinicalPathology, simStage, simTreatment]);
-
-  const effectiveTooth = pickedTooth ?? simulation?.target_teeth?.[0] ?? null;
-  const showPopup = !!(effectivePathology && effectiveTooth) && !popupHidden;
-
-  // Whenever the source pathology / tooth changes, force the popup back open
+  // Reset dismissed state when stage changes
+  const prevStageRef = useRef(null);
   useEffect(() => {
-    setPopupHidden(false);
-  }, [effectivePathology?.kind, effectivePathology?.depth, effectiveTooth]);
+    if (simStage !== prevStageRef.current) {
+      prevStageRef.current = simStage;
+      setPopupDismissed(false);
+    }
+  }, [simStage]);
+
+  // Which pathology to visualise — clinical picker takes priority
+  const effectivePathology = useMemo(() => {
+    if (dentistPathology?.kind) return dentistPathology;
+    return stageToPathology(simStage, simTreatment);
+  }, [dentistPathology, simStage, simTreatment]);
+
+  // Which tooth — clinical picker takes priority
+  const effectiveTooth = pickedTooth ?? simulation?.target_teeth?.[0] ?? null;
+
+  const showPopup = !popupDismissed && effectivePathology && effectiveTooth;
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
@@ -128,7 +131,7 @@ export default function DentalViewer({ scanUrl, scanFormat, simulation, activeSt
         camera={{ position: [0, 14, 42], fov: 34, near: 0.1, far: 1000 }}
         gl={{ antialias: true, toneMapping: THREE.ACESFilmicToneMapping, toneMappingExposure: 1.1 }}
         shadows
-        style={{ background: '#000' }}
+        style={{ background: '#000', width: '100%', height: '100%' }}
       >
         <color attach="background" args={['#000000']} />
 
@@ -143,9 +146,9 @@ export default function DentalViewer({ scanUrl, scanFormat, simulation, activeSt
 
         <Suspense fallback={<LoadingIndicator />}>
           {scanUrl ? (
-            <TreatmentJourney url={scanUrl} format={scanFormat} textureUrl={textureUrl} simulation={simulation} activeStateIndex={activeStateIndex} clinicalPathology={effectivePathology} pickedTooth={effectiveTooth} />
+            <TreatmentJourney url={scanUrl} format={scanFormat} textureUrl={textureUrl} simulation={simulation} activeStateIndex={activeStateIndex} dentistPathology={dentistPathology} pickedTooth={pickedTooth} />
           ) : (
-            <PlaceholderArch simulation={simulation} activeStateIndex={activeStateIndex} clinicalPathology={effectivePathology} pickedTooth={effectiveTooth} />
+            <PlaceholderArch simulation={simulation} activeStateIndex={activeStateIndex} />
           )}
         </Suspense>
 
@@ -160,36 +163,24 @@ export default function DentalViewer({ scanUrl, scanFormat, simulation, activeSt
         <Environment preset="studio" environmentIntensity={0.5} />
       </Canvas>
 
-      {/* Progression popup — always visible when any pathology/treatment is set,
-          pinned to the top-right of the viewer so it doesn't depend on
-          clicking the right tooth on an unsegmented scan. */}
+      {/* ── Disease progression popup — rendered OUTSIDE Canvas so it can
+           use its own separate Canvas for the 3D tooth simulation ─── */}
       {showPopup && (
-        <div style={{ position: 'absolute', top: 16, left: 16, zIndex: 30 }}>
+        <div
+          style={{
+            position: 'absolute',
+            top: 16,
+            left: 16,
+            zIndex: 40,
+            pointerEvents: 'auto',
+          }}
+        >
           <ToothProgressionPopup
             tooth={effectiveTooth}
             pathology={effectivePathology}
-            onClose={() => setPopupHidden(true)}
+            onClose={() => setPopupDismissed(true)}
           />
         </div>
-      )}
-
-      {/* Show-progression chip when popup is dismissed */}
-      {!showPopup && effectivePathology && effectiveTooth && (
-        <button
-          onClick={() => setPopupHidden(false)}
-          style={{
-            position: 'absolute', top: 16, left: 16, zIndex: 30,
-            padding: '8px 14px',
-            fontSize: 12, fontWeight: 700, color: '#fff',
-            background: 'linear-gradient(135deg, #dc2626, #b91c1c)',
-            border: '1px solid rgba(255,255,255,0.15)',
-            borderRadius: 8,
-            cursor: 'pointer',
-            boxShadow: '0 6px 18px rgba(220,38,38,0.4), 0 0 24px rgba(220,38,38,0.2)',
-          }}
-        >
-          ▶ Show Tooth #{effectiveTooth} Progression
-        </button>
       )}
     </div>
   );
@@ -331,203 +322,8 @@ function applyProceduralDentalColors(geo) {
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 }
 
-/* ──────────────────────────────────────────────────────────────────────
-   makeStainTexture — procedurally renders a 2D pathology/treatment patch
-   to a canvas, returns a CanvasTexture suitable for projecting as a DECAL
-   onto the real scan mesh. The decal wraps to the tooth's actual surface
-   so the stain looks BAKED IN, not glued on top.
-
-   Inspired by the clinical look of dental textbook photos: dark brown
-   organic stain following the fissures for caries, smooth tooth-colored
-   patch for composite fillings, glossy ceramic for crowns, etc.
-─────────────────────────────────────────────────────────────────────── */
-function makeStainTexture(kind, stage, treatment) {
-  const SIZE = 512;
-  const canvas = document.createElement('canvas');
-  canvas.width = SIZE;
-  canvas.height = SIZE;
-  const ctx = canvas.getContext('2d');
-  ctx.clearRect(0, 0, SIZE, SIZE);
-  const cx = SIZE / 2, cy = SIZE / 2;
-
-  // Helper — a jagged dark line radiating from center, like a stained fissure
-  const drawFissure = (angle, length, width, color) => {
-    ctx.strokeStyle = color;
-    ctx.lineWidth = width;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.beginPath();
-    ctx.moveTo(cx, cy);
-    let x = cx, y = cy;
-    const steps = 14;
-    for (let s = 1; s <= steps; s++) {
-      const t = s / steps;
-      const r = length * t;
-      const a = angle + (Math.random() - 0.5) * 0.45;
-      const wobble = (Math.random() - 0.5) * 22 * (1 - t);
-      x = cx + Math.cos(a) * r + wobble;
-      y = cy + Math.sin(a) * r + wobble;
-      ctx.lineTo(x, y);
-    }
-    ctx.stroke();
-  };
-
-  // ── CARIES — dark brown organic stain that LOOKS like decay in fissures
-  if (kind === 'caries') {
-    const palettes = {
-      enamel:      { core: 'rgba(110,75,30,0.85)', mid: 'rgba(135,90,45,0.7)',  edge: 'rgba(170,130,80,0.0)' },
-      dentin:      { core: 'rgba(35,15,4,0.96)',   mid: 'rgba(75,38,14,0.88)',  edge: 'rgba(120,70,30,0.0)' },
-      deep_dentin: { core: 'rgba(12,4,0,0.98)',    mid: 'rgba(45,18,4,0.92)',   edge: 'rgba(100,55,20,0.0)' },
-      pulp:        { core: 'rgba(0,0,0,1)',        mid: 'rgba(40,8,5,0.95)',    edge: 'rgba(95,35,15,0.0)' },
-      abscess:     { core: 'rgba(0,0,0,1)',        mid: 'rgba(80,15,5,0.95)',   edge: 'rgba(160,40,20,0.0)' },
-    };
-    const pal = palettes[stage] || palettes.dentin;
-
-    // Outer halo — soft brown shadow
-    const grad = ctx.createRadialGradient(cx, cy, 6, cx, cy, SIZE * 0.42);
-    grad.addColorStop(0,   pal.core);
-    grad.addColorStop(0.4, pal.mid);
-    grad.addColorStop(1,   pal.edge);
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, SIZE, SIZE);
-
-    // Branching dark fissures — like decay tracking along grooves
-    const numFissures = stage === 'enamel' ? 4 : 7;
-    for (let i = 0; i < numFissures; i++) {
-      const angle = (i / numFissures) * Math.PI * 2 + Math.random() * 0.6;
-      const len = SIZE * (0.20 + Math.random() * 0.20);
-      const w = 9 + Math.random() * 14;
-      drawFissure(angle, len, w, pal.core);
-      // Inner darker streak inside the fissure
-      drawFissure(angle, len * 0.7, w * 0.45, pal.core);
-    }
-
-    // Re-darken the very center for depth
-    const grad2 = ctx.createRadialGradient(cx, cy, 0, cx, cy, SIZE * 0.18);
-    grad2.addColorStop(0, pal.core);
-    grad2.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.fillStyle = grad2;
-    ctx.fillRect(0, 0, SIZE, SIZE);
-
-    // Scattered specks of darker decay
-    ctx.fillStyle = pal.core;
-    for (let i = 0; i < 35; i++) {
-      const r = SIZE * 0.05 + Math.random() * SIZE * 0.32;
-      const a = Math.random() * Math.PI * 2;
-      ctx.beginPath();
-      ctx.arc(cx + Math.cos(a) * r, cy + Math.sin(a) * r, 1 + Math.random() * 4, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    // Pulp/abscess — angry red glow at the center
-    if (stage === 'pulp' || stage === 'abscess') {
-      const rg = ctx.createRadialGradient(cx, cy, 0, cx, cy, SIZE * 0.10);
-      rg.addColorStop(0, 'rgba(220,30,20,0.9)');
-      rg.addColorStop(1, 'rgba(220,30,20,0)');
-      ctx.fillStyle = rg;
-      ctx.fillRect(0, 0, SIZE, SIZE);
-    }
-  }
-  // ── COMPOSITE FILLING / INLAY / VENEER / SEALANT — tooth-colored smooth patch
-  else if (kind === 'composite_filling' || kind === 'inlay' || kind === 'veneer' || kind === 'sealant') {
-    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, SIZE * 0.45);
-    grad.addColorStop(0,    'rgba(248,235,200,0.97)');
-    grad.addColorStop(0.7,  'rgba(232,212,170,0.92)');
-    grad.addColorStop(0.92, 'rgba(190,160,115,0.55)');
-    grad.addColorStop(1,    'rgba(160,130,90,0)');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, SIZE, SIZE);
-    // Subtle margin ring (the bond line)
-    ctx.strokeStyle = 'rgba(110,80,50,0.5)';
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.arc(cx, cy, SIZE * 0.42, 0, Math.PI * 2);
-    ctx.stroke();
-    // Tiny highlight
-    const hi = ctx.createRadialGradient(cx - 50, cy - 50, 0, cx - 50, cy - 50, SIZE * 0.16);
-    hi.addColorStop(0, 'rgba(255,255,255,0.35)');
-    hi.addColorStop(1, 'rgba(255,255,255,0)');
-    ctx.fillStyle = hi;
-    ctx.fillRect(0, 0, SIZE, SIZE);
-  }
-  // ── AMALGAM — dark silvery patch
-  else if (kind === 'amalgam') {
-    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, SIZE * 0.45);
-    grad.addColorStop(0,    'rgba(70,72,78,0.98)');
-    grad.addColorStop(0.6,  'rgba(48,50,56,0.95)');
-    grad.addColorStop(0.92, 'rgba(28,28,32,0.7)');
-    grad.addColorStop(1,    'rgba(20,20,25,0)');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, SIZE, SIZE);
-    // Metallic noise
-    for (let i = 0; i < 240; i++) {
-      const x = Math.random() * SIZE, y = Math.random() * SIZE;
-      const dx = x - cx, dy = y - cy;
-      if (dx * dx + dy * dy > (SIZE * 0.42) ** 2) continue;
-      ctx.fillStyle = `rgba(150,155,165,${0.04 + Math.random() * 0.12})`;
-      ctx.fillRect(x, y, 1, 1);
-    }
-  }
-  // ── CROWN (any) — bright glossy ceramic or metal cap
-  else if (kind === 'metal_crown' || kind === 'all_ceramic_crown' || kind === 'pfm_crown') {
-    const isMetal = kind === 'metal_crown';
-    const grad = ctx.createRadialGradient(cx - 40, cy - 40, 0, cx, cy, SIZE * 0.5);
-    if (isMetal) {
-      grad.addColorStop(0,    'rgba(245,245,250,1)');
-      grad.addColorStop(0.5,  'rgba(180,185,195,1)');
-      grad.addColorStop(0.85, 'rgba(120,125,135,0.85)');
-      grad.addColorStop(1,    'rgba(90,95,105,0)');
-    } else {
-      grad.addColorStop(0,    'rgba(255,250,238,1)');
-      grad.addColorStop(0.5,  'rgba(245,235,212,1)');
-      grad.addColorStop(0.85, 'rgba(220,205,175,0.9)');
-      grad.addColorStop(1,    'rgba(195,175,140,0)');
-    }
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, SIZE, SIZE);
-    // Specular highlight
-    const hi = ctx.createRadialGradient(cx - 70, cy - 70, 0, cx - 70, cy - 70, SIZE * 0.2);
-    hi.addColorStop(0, 'rgba(255,255,255,0.55)');
-    hi.addColorStop(1, 'rgba(255,255,255,0)');
-    ctx.fillStyle = hi;
-    ctx.fillRect(0, 0, SIZE, SIZE);
-  }
-  // ── ROOT CANAL — rust/orange sealed access cavity
-  else if (kind === 'rct') {
-    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, SIZE * 0.45);
-    grad.addColorStop(0,    'rgba(135,68,28,0.96)');
-    grad.addColorStop(0.6,  'rgba(165,90,42,0.9)');
-    grad.addColorStop(0.92, 'rgba(180,130,80,0.5)');
-    grad.addColorStop(1,    'rgba(180,130,80,0)');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, SIZE, SIZE);
-    // Dark center — the sealed access opening
-    const dark = ctx.createRadialGradient(cx, cy, 0, cx, cy, SIZE * 0.13);
-    dark.addColorStop(0, 'rgba(40,15,5,0.95)');
-    dark.addColorStop(1, 'rgba(40,15,5,0)');
-    ctx.fillStyle = dark;
-    ctx.fillRect(0, 0, SIZE, SIZE);
-  }
-  // ── EXTRACTION — dark red socket
-  else if (kind === 'extraction') {
-    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, SIZE * 0.45);
-    grad.addColorStop(0,    'rgba(20,5,5,1)');
-    grad.addColorStop(0.4,  'rgba(70,20,15,0.95)');
-    grad.addColorStop(0.85, 'rgba(140,55,40,0.6)');
-    grad.addColorStop(1,    'rgba(180,90,75,0)');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, SIZE, SIZE);
-  }
-
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.needsUpdate = true;
-  return tex;
-}
-
-function TreatmentJourney({ url, format, textureUrl, simulation, activeStateIndex, clinicalPathology, pickedTooth }) {
+function TreatmentJourney({ url, format, textureUrl, simulation, activeStateIndex, dentistPathology, pickedTooth }) {
   const meshRef = useRef();
-  const [scanMesh, setScanMesh] = useState(null);
   const [geometry, setGeometry] = useState(null);
   const [bbox, setBbox] = useState(null);
   const [hasUVs, setHasUVs] = useState(false);
@@ -603,31 +399,13 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
 
   const activeState = simulation?.states?.[activeStateIndex] || null;
   const styling = useMemo(() => getStageStyling(activeState), [activeState]);
-  const simStage = activeState?.clinical_metrics?.stage;
-  const simTreatment = activeState?.clinical_metrics?.treatment;
+  const stage = activeState?.clinical_metrics?.stage;
+  const treatment = activeState?.clinical_metrics?.treatment;
+  const isPulsing = ['pulp', 'abscess'].includes(stage);
+  const isHealthy = styling.label === 'Healthy';
   const metrics = activeState?.clinical_metrics || {};
 
-  // ── Derive effective stage/treatment from clinical pathology (overrides sim) ──
-  const { effectiveStage, effectiveTreatment } = useMemo(() => {
-    if (!clinicalPathology?.kind) {
-      return { effectiveStage: simStage, effectiveTreatment: simTreatment };
-    }
-    const { kind, depth } = clinicalPathology;
-    const depthToStage = { incipient: 'enamel', enamel: 'enamel', dentin: 'dentin', deep_dentin: 'dentin', pulp_exposure: 'pulp' };
-    const kindToTreatment = {
-      composite_filling: 'composite_filling', amalgam: 'composite_filling',
-      inlay: 'composite_filling', sealant: 'composite_filling',
-      all_ceramic_crown: 'zirconia_crown', pfm_crown: 'zirconia_crown',
-      metal_crown: 'metal_crown', rct: 'root_canal', veneer: 'composite_filling',
-    };
-    if (kind === 'caries')    return { effectiveStage: depthToStage[depth] || 'dentin',    effectiveTreatment: null };
-    if (kind === 'extraction') return { effectiveStage: 'extracted', effectiveTreatment: null };
-    return { effectiveStage: 'restored', effectiveTreatment: kindToTreatment[kind] || 'composite_filling' };
-  }, [clinicalPathology, simStage, simTreatment]);
-
-  const isPulsing = ['pulp', 'abscess'].includes(effectiveStage);
-
-  // ── Click-to-place overlay ──
+  // Click-to-place treatment marker on the scan via raycasting
   const [markerPos, setMarkerPos] = useState(null);
   const [markerNormal, setMarkerNormal] = useState(null);
 
@@ -635,20 +413,13 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
     e.stopPropagation();
     if (e.face && e.point) {
       setMarkerPos([e.point.x, e.point.y, e.point.z]);
+      // Convert face normal from local to world
       const n = e.face.normal.clone().transformDirection(meshRef.current.matrixWorld).normalize();
       setMarkerNormal([n.x, n.y, n.z]);
     }
   };
 
-  // ── Reset marker when pathology is cleared ──
-  useEffect(() => {
-    if (!clinicalPathology?.kind) {
-      setMarkerPos(null);
-      setMarkerNormal(null);
-    }
-  }, [clinicalPathology?.kind, clinicalPathology?.depth, pickedTooth]);
-
-  // ── Texture imperatively applied ──
+  // Imperatively set map + trigger shader recompile whenever texture changes
   useEffect(() => {
     if (!meshRef.current) return;
     const mat = meshRef.current.material;
@@ -664,19 +435,18 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
 
   if (!geometry || !bbox) return <LoadingIndicator />;
 
-  const meshDiag = Math.sqrt(bbox.sizeX**2 + bbox.sizeY**2 + bbox.sizeZ**2);
-  const overlaySize = meshDiag * 0.032; // slightly larger for visibility
-
   const monthLabel  = activeState?.label?.split('—')[0]?.trim() || '';
   const detailLabel = activeState?.label?.split('—')[1]?.trim() || activeState?.label || '';
 
-  const hasClinical = !!(clinicalPathology?.kind && pickedTooth);
+  // Estimate tooth size for visual overlays (~3% of mesh diagonal)
+  const meshDiag = Math.sqrt(bbox.sizeX**2 + bbox.sizeY**2 + bbox.sizeZ**2);
+  const overlaySize = meshDiag * 0.025;
 
   return (
     <group>
-      {/* The scan mesh */}
+      {/* The scan — real texture, zero color wash, clickable */}
       <mesh
-        ref={(m) => { meshRef.current = m; if (m !== scanMesh) setScanMesh(m); }}
+        ref={meshRef}
         geometry={geometry}
         castShadow
         receiveShadow
@@ -697,57 +467,49 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
         />
       </mesh>
 
-      {/* Texture hint */}
-      {!texture && !hasClinical && (
+      {/* Hints */}
+      {!texture && (
         <Html position={[0, bbox.topY + 2.5, 0]} center distanceFactor={22}>
           <div className="bg-black/70 text-gray-400 text-[10px] px-3 py-1.5 rounded-md whitespace-nowrap pointer-events-none border border-white/10">
             Drop colour JPEG anywhere to apply texture
           </div>
         </Html>
       )}
-
-      {/* Click hint */}
       {!markerPos && (
         <Html position={[0, bbox.topY + (texture ? 2.5 : 4), 0]} center distanceFactor={22}>
-          <div
-            className="text-white text-[11px] font-semibold px-3 py-1.5 rounded-md whitespace-nowrap pointer-events-none shadow-lg"
-            style={{ background: hasClinical ? '#f59e0b' : '#3b82f6', animation: hasClinical ? 'pulse 1.4s ease-in-out infinite' : 'none' }}
-          >
-            {hasClinical
-              ? `👆 Click tooth #${pickedTooth} on the scan to place the ${clinicalPathology.kind === 'caries' ? 'cavity' : 'treatment'}`
-              : '👆 Click any tooth on the scan to place a marker'}
+          <div className="bg-lume-500 text-white text-[11px] font-semibold px-3 py-1.5 rounded-md whitespace-nowrap pointer-events-none shadow-lg" style={{ background: '#3b82f6' }}>
+            {dentistPathology?.kind && pickedTooth
+              ? `👆 Click tooth #${pickedTooth} on the scan to place the ${(dentistPathology.kind || '').replace(/_/g,' ')}`
+              : '👆 Click any tooth on the scan to place the treatment'}
           </div>
         </Html>
       )}
 
-      {/* Clinical pathology badge — top of scan, always visible when panel is filled */}
-      {hasClinical && (
-        <Html position={[0, bbox.topY + (markerPos ? 3.5 : 6.5), 0]} center distanceFactor={22}>
-          <ClinicalBadge pathology={clinicalPathology} tooth={pickedTooth} onReset={() => { setMarkerPos(null); setMarkerNormal(null); }} />
-        </Html>
-      )}
-
-      {/* Pathology decal — projected onto the actual scan surface so it
-          looks baked into the tooth, not glued on top. */}
-      {markerPos && markerNormal && scanMesh && clinicalPathology?.kind && (
-        <PathologyDecal
-          mesh={scanMesh}
+      {/* DENTIST-DRIVEN realistic pathology overlay (Clinical Tools panel) */}
+      {markerPos && markerNormal && dentistPathology?.kind && (
+        <RealisticPathologyOverlay
           position={markerPos}
           normal={markerNormal}
-          size={overlaySize * 1.6}
-          kind={clinicalPathology.kind}
-          stage={effectiveStage}
-          treatment={effectiveTreatment}
+          size={overlaySize}
+          pathology={dentistPathology}
+          fdi={pickedTooth}
+        />
+      )}
+
+      {/* Fallback: timeline-driven overlay (only if no dentist pathology selected) */}
+      {markerPos && markerNormal && !dentistPathology?.kind && (
+        <TreatmentOverlay
+          position={markerPos}
+          normal={markerNormal}
+          size={overlaySize}
+          stage={stage}
+          treatment={treatment}
           pulsing={isPulsing}
         />
       )}
 
-      {/* Progression popup is rendered at the DentalViewer level
-          (outside the Canvas) so it shows whether or not the user has
-          clicked a tooth — driven by simulation state + picker state. */}
-
-      {/* Simulation timeline card — only when no clinical override */}
-      {activeState && !hasClinical && (
+      {/* Clinical info card — floats to the right of the scan */}
+      {activeState && (
         <Html position={[bbox.sizeX * 0.55 + 1, 0, 0]} distanceFactor={20} style={{ width: 220 }}>
           <div className="pointer-events-none select-none" style={{ fontFamily: 'system-ui, sans-serif' }}>
             <div className="flex items-center gap-2 mb-2">
@@ -784,85 +546,588 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
 }
 
 /* ──────────────────────────────────────────────────────────────────────
-   PathologyDecal — projects a 2D procedural stain texture onto the actual
-   scan mesh using THREE.DecalGeometry. The decal wraps to the tooth's
-   real surface curvature so the cavity/filling/crown looks BAKED INTO the
-   scan, not floating on top.
+   TreatmentOverlay — actual 3D anatomical treatment that appears on the
+   tooth surface and morphs based on the current stage.
 
-   Material properties switch by pathology kind:
-     • caries       → matte rough dark brown stain
-     • amalgam      → dark metallic
-     • crowns       → glossy ceramic/metal
-     • composite    → tooth-colored matte
-     • rct          → matte rust
-     • extraction   → matte dark red socket
+   Stages:
+     • healthy     → nothing
+     • enamel      → small brown demineralization spot
+     • dentin      → bigger dark brown cavity (irregular shape)
+     • pulp        → black hole reaching down with red glow inside
+     • abscess     → dark hole + red inflamed aura
+     • restored / composite_filling → smooth white composite dome
+     • zirconia_crown / rct_crown   → shiny silver-white crown cap
+     • root_canal  → rust-colored sealed cavity
 ─────────────────────────────────────────────────────────────────────── */
-function PathologyDecal({ mesh, position, normal, size, kind, stage, treatment, pulsing }) {
-  const matRef = useRef();
+function TreatmentOverlay({ position, normal, size, stage, treatment, pulsing }) {
+  const groupRef = useRef();
+  const glowRef = useRef();
 
-  // Procedural stain texture — re-baked when the diagnosis changes
-  const texture = useMemo(
-    () => makeStainTexture(kind, stage, treatment),
-    [kind, stage, treatment]
-  );
+  // Orient the overlay so it sits FLAT against the tooth surface
+  const quaternion = useMemo(() => {
+    const q = new THREE.Quaternion();
+    const up = new THREE.Vector3(0, 1, 0);
+    const n = new THREE.Vector3(...normal).normalize();
+    q.setFromUnitVectors(up, n);
+    return q;
+  }, [normal]);
 
-  // Decal geometry — projected from `position` along `normal`, conforming
-  // to the scan mesh's actual curvature.
-  const decalGeometry = useMemo(() => {
-    if (!mesh || !mesh.geometry) return null;
-    try {
-      const pos = new THREE.Vector3(...position);
-      const n = new THREE.Vector3(...normal).normalize();
-
-      // Build orientation: align the decal projector's +Z with the surface normal
-      const lookTarget = pos.clone().add(n);
-      const up = Math.abs(n.y) > 0.95 ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(0, 1, 0);
-      const m = new THREE.Matrix4().lookAt(pos, lookTarget, up);
-      const orientation = new THREE.Euler().setFromRotationMatrix(m);
-
-      // Decal projector size — covers roughly one occlusal tooth surface
-      const s = size;
-      const decalSize = new THREE.Vector3(s, s, s * 1.2);
-      return new DecalGeometry(mesh, pos, orientation, decalSize);
-    } catch {
-      return null;
-    }
-  }, [mesh, position, normal, size, kind, stage, treatment]);
-
-  // Subtle pulse for active disease (pulp / abscess) — fades opacity
+  // Pulsing animation for active disease/treatment
   useFrameImpl(({ clock }) => {
-    if (!matRef.current) return;
-    if (pulsing) {
-      matRef.current.opacity = 0.85 + Math.sin(clock.elapsedTime * 2.4) * 0.15;
-    } else {
-      matRef.current.opacity = 1;
+    if (glowRef.current && pulsing) {
+      const pulse = 1 + Math.sin(clock.elapsedTime * 3) * 0.15;
+      glowRef.current.scale.set(pulse, pulse, pulse);
+      glowRef.current.material.opacity = 0.4 + Math.sin(clock.elapsedTime * 3) * 0.2;
     }
   });
 
-  if (!decalGeometry) return null;
-
-  // Material props per category
-  const isCaries  = kind === 'caries';
-  const isMetal   = kind === 'metal_crown' || kind === 'amalgam';
-  const isGlossy  = kind === 'metal_crown' || kind === 'all_ceramic_crown' || kind === 'pfm_crown';
+  // Push the overlay slightly OUT from the surface so it doesn't z-fight
+  const offset = useMemo(() => {
+    const n = new THREE.Vector3(...normal).normalize().multiplyScalar(size * 0.05);
+    return [position[0] + n.x, position[1] + n.y, position[2] + n.z];
+  }, [position, normal, size]);
 
   return (
-    <mesh geometry={decalGeometry} renderOrder={2}>
-      <meshStandardMaterial
-        ref={matRef}
-        map={texture}
-        transparent
-        depthTest
-        depthWrite={false}
-        polygonOffset
-        polygonOffsetFactor={-4}
-        polygonOffsetUnits={-4}
-        roughness={isCaries ? 0.95 : isGlossy ? 0.18 : isMetal ? 0.35 : 0.45}
-        metalness={isMetal ? 0.85 : 0}
-        side={THREE.FrontSide}
-      />
+    <group ref={groupRef} position={offset} quaternion={quaternion}>
+      {/* Render the visual based on stage/treatment */}
+      <StageVisual stage={stage} treatment={treatment} size={size} />
+
+      {/* Soft glow halo for active disease */}
+      {(pulsing || ['pulp', 'abscess', 'dentin'].includes(stage)) && (
+        <mesh ref={glowRef} position={[0, 0, 0]}>
+          <sphereGeometry args={[size * 1.8, 24, 24]} />
+          <meshBasicMaterial
+            color={stage === 'abscess' ? '#ff2200' : stage === 'pulp' ? '#ff3333' : '#cc6622'}
+            transparent
+            opacity={0.35}
+            depthWrite={false}
+          />
+        </mesh>
+      )}
+    </group>
+  );
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+   RealisticPathologyOverlay — driven by the dentist's full Clinical
+   Tools selection (Class, surfaces, depth, kind). Renders a high-fidelity
+   3D lesion / restoration / crown directly on the scan at the clicked
+   point, oriented to the surface normal.
+
+   Caries: irregular brown/black cavity that scales in depth and area
+           with depth (incipient → pulp_exposure). Multiple smaller
+           pits scattered for an organic look, not a clean sphere.
+   Composite: smooth cream dome with subtle gloss matching enamel.
+   Amalgam: dark grey, slightly metallic, rough surface.
+   Inlay/Onlay: ivory ceramic with sharper margins.
+   Sealant: thin translucent blue coat.
+   Veneer: thin enamel-like wafer on the buccal aspect.
+   All-ceramic crown: full coronal cap, ceramic translucency, NO metal.
+   PFM crown: opaque white with thin metal margin halo.
+   Metal crown: highly reflective silver dome.
+   RCT (no crown): orange gutta-percha visible deep.
+   Extraction: dark socket depression.
+─────────────────────────────────────────────────────────────────────── */
+function RealisticPathologyOverlay({ position, normal, size, pathology, fdi }) {
+  const groupRef = useRef();
+  const pulseRef = useRef();
+  const { kind, depth, surfaces, classification } = pathology;
+
+  // Orient overlay to scan surface normal
+  const quaternion = useMemo(() => {
+    const q = new THREE.Quaternion();
+    const up = new THREE.Vector3(0, 1, 0);
+    const n = new THREE.Vector3(...normal).normalize();
+    q.setFromUnitVectors(up, n);
+    return q;
+  }, [normal]);
+
+  // Push slightly outward to avoid z-fighting
+  const offset = useMemo(() => {
+    const n = new THREE.Vector3(...normal).normalize().multiplyScalar(size * 0.04);
+    return [position[0] + n.x, position[1] + n.y, position[2] + n.z];
+  }, [position, normal, size]);
+
+  // Pulsing for severe lesions
+  useFrameImpl(({ clock }) => {
+    if (pulseRef.current && depth === 'pulp_exposure' && kind === 'caries') {
+      const p = 1 + Math.sin(clock.elapsedTime * 4) * 0.08;
+      pulseRef.current.scale.set(p, p, p);
+    }
+  });
+
+  // Depth → size & darkness mapping for caries
+  const depthMap = {
+    incipient:     { radius: 0.55, darkness: 0.85, color: '#e8d8a8', edge: '#c8a868', pit: '#a87838' },
+    enamel:        { radius: 0.75, darkness: 0.70, color: '#a87838', edge: '#7a4f1a', pit: '#5a3318' },
+    dentin:        { radius: 0.95, darkness: 0.55, color: '#5a3318', edge: '#2e1808', pit: '#1a0a04' },
+    deep_dentin:   { radius: 1.10, darkness: 0.40, color: '#2e1808', edge: '#0d0402', pit: '#000' },
+    pulp_exposure: { radius: 1.25, darkness: 0.20, color: '#0d0402', edge: '#000', pit: '#000' },
+  };
+  const dm = depthMap[depth || 'enamel'];
+
+  /* ── CROWNS — full coronal cap shaped like a rounded molar ── */
+  if (['all_ceramic_crown', 'pfm_crown', 'metal_crown'].includes(kind)) {
+    const isMetal = kind === 'metal_crown';
+    const isPFM = kind === 'pfm_crown';
+    const crownColor = isMetal ? '#c8ccd0' : isPFM ? '#f0e8d4' : '#f8f0e0';
+    return (
+      <group ref={groupRef} position={offset} quaternion={quaternion}>
+        {/* Crown body — flattened sphere shaped like an occlusal cap */}
+        <mesh position={[0, size * 0.55, 0]} scale={[1.2, 0.85, 1.2]}>
+          <sphereGeometry args={[size * 1.1, 32, 24, 0, Math.PI * 2, 0, Math.PI * 0.6]} />
+          <meshPhysicalMaterial
+            color={crownColor}
+            metalness={isMetal ? 0.92 : isPFM ? 0.18 : 0.0}
+            roughness={isMetal ? 0.12 : isPFM ? 0.22 : 0.16}
+            clearcoat={1}
+            clearcoatRoughness={isMetal ? 0.04 : 0.08}
+            reflectivity={isMetal ? 0.95 : 0.6}
+            transmission={!isMetal && !isPFM ? 0.08 : 0}
+            ior={1.5}
+            thickness={0.4}
+            attenuationColor="#f0e8d0"
+            attenuationDistance={1.5}
+          />
+        </mesh>
+        {/* Cusp bumps for a molar-like silhouette */}
+        {[[-0.5, 0.5], [0.5, 0.5], [-0.5, -0.5], [0.5, -0.5]].map(([x, z], i) => (
+          <mesh key={i} position={[x * size * 0.55, size * 0.95, z * size * 0.55]}>
+            <sphereGeometry args={[size * 0.32, 16, 12]} />
+            <meshPhysicalMaterial
+              color={crownColor}
+              metalness={isMetal ? 0.92 : isPFM ? 0.18 : 0.0}
+              roughness={isMetal ? 0.12 : isPFM ? 0.22 : 0.16}
+              clearcoat={1}
+              clearcoatRoughness={0.08}
+              transmission={!isMetal && !isPFM ? 0.08 : 0}
+              ior={1.5}
+            />
+          </mesh>
+        ))}
+        {/* Margin line at cervical — thin darker ring */}
+        <mesh position={[0, size * 0.05, 0]} rotation={[Math.PI / 2, 0, 0]}>
+          <torusGeometry args={[size * 1.1, size * 0.04, 8, 32]} />
+          <meshStandardMaterial color={isMetal ? '#666' : '#b8a888'} roughness={0.6} />
+        </mesh>
+        <Html position={[0, size * 1.6, 0]} center distanceFactor={20}>
+          <div className="bg-black/85 text-white text-[10px] px-2 py-0.5 rounded whitespace-nowrap pointer-events-none border border-white/10">
+            {fdi ? `#${fdi} · ` : ''}{isMetal ? 'Metal Crown' : isPFM ? 'PFM Crown' : 'All-Ceramic Crown'}
+          </div>
+        </Html>
+      </group>
+    );
+  }
+
+  /* ── EXTRACTION — concave socket ── */
+  if (kind === 'extraction') {
+    return (
+      <group ref={groupRef} position={offset} quaternion={quaternion}>
+        <mesh position={[0, -size * 0.2, 0]} rotation={[Math.PI, 0, 0]}>
+          <sphereGeometry args={[size * 1.3, 24, 18, 0, Math.PI * 2, 0, Math.PI * 0.5]} />
+          <meshStandardMaterial color="#4a1818" roughness={0.95} />
+        </mesh>
+        <Html position={[0, size * 0.4, 0]} center distanceFactor={20}>
+          <div className="bg-red-900/85 text-white text-[10px] px-2 py-0.5 rounded whitespace-nowrap pointer-events-none">
+            {fdi ? `#${fdi} · ` : ''}Extracted
+          </div>
+        </Html>
+      </group>
+    );
+  }
+
+  /* ── RCT (no crown) — orange gutta-percha showing through a dark hole ── */
+  if (kind === 'rct') {
+    return (
+      <group ref={groupRef} position={offset} quaternion={quaternion}>
+        <mesh position={[0, -size * 0.05, 0]}>
+          <sphereGeometry args={[size * 0.85, 20, 16, 0, Math.PI * 2, 0, Math.PI * 0.5]} />
+          <meshStandardMaterial color="#1a0d05" roughness={1} />
+        </mesh>
+        <mesh position={[0, -size * 0.4, 0]}>
+          <cylinderGeometry args={[size * 0.18, size * 0.1, size * 1.4, 16]} />
+          <meshStandardMaterial color="#dd6622" emissive="#aa3300" emissiveIntensity={0.45} roughness={0.5} />
+        </mesh>
+        <Html position={[0, size * 0.7, 0]} center distanceFactor={20}>
+          <div className="bg-orange-900/85 text-white text-[10px] px-2 py-0.5 rounded whitespace-nowrap pointer-events-none">
+            {fdi ? `#${fdi} · ` : ''}RCT — Gutta Percha
+          </div>
+        </Html>
+      </group>
+    );
+  }
+
+  /* ── SEALANT — thin translucent coat in a groove ── */
+  if (kind === 'sealant') {
+    return (
+      <group ref={groupRef} position={offset} quaternion={quaternion}>
+        <mesh position={[0, size * 0.05, 0]}>
+          <boxGeometry args={[size * 1.4, size * 0.08, size * 0.4]} />
+          <meshPhysicalMaterial color="#b8d8ff" transparent opacity={0.6} clearcoat={1} roughness={0.1} />
+        </mesh>
+        <Html position={[0, size * 0.5, 0]} center distanceFactor={20}>
+          <div className="bg-blue-900/85 text-white text-[10px] px-2 py-0.5 rounded whitespace-nowrap pointer-events-none">
+            {fdi ? `#${fdi} · ` : ''}Sealant
+          </div>
+        </Html>
+      </group>
+    );
+  }
+
+  /* ── VENEER — thin enamel-like wafer ── */
+  if (kind === 'veneer') {
+    return (
+      <group ref={groupRef} position={offset} quaternion={quaternion}>
+        <mesh position={[0, size * 0.02, 0]} scale={[1.2, 0.15, 1.0]}>
+          <sphereGeometry args={[size * 1.0, 24, 16, 0, Math.PI * 2, 0, Math.PI * 0.5]} />
+          <meshPhysicalMaterial
+            color="#fff8e8"
+            metalness={0}
+            roughness={0.12}
+            clearcoat={1}
+            clearcoatRoughness={0.05}
+            transmission={0.15}
+            ior={1.5}
+            thickness={0.2}
+          />
+        </mesh>
+        <Html position={[0, size * 0.5, 0]} center distanceFactor={20}>
+          <div className="bg-black/85 text-white text-[10px] px-2 py-0.5 rounded whitespace-nowrap pointer-events-none border border-white/10">
+            {fdi ? `#${fdi} · ` : ''}Veneer
+          </div>
+        </Html>
+      </group>
+    );
+  }
+
+  /* ── FILLINGS / INLAY / CARIES — surface-aware overlay ─────── */
+  // For multi-surface picks, we render lesions at offset positions
+  // along the surface normal's tangent plane to suggest M / O / D coverage.
+  const surfList = (surfaces && surfaces.length > 0) ? surfaces : ['O'];
+  // Tangent vectors in the local frame (Y is normal, X & Z lie in tangent plane)
+  const surfaceOffsets = surfList.map((s) => {
+    if (s === 'M') return { x: -size * 0.7, z: 0, label: 'M' };
+    if (s === 'D') return { x:  size * 0.7, z: 0, label: 'D' };
+    if (s === 'O' || s === 'I') return { x: 0, z: 0, label: s };
+    if (s === 'B') return { x: 0, z:  size * 0.6, label: 'B' };
+    if (s === 'L') return { x: 0, z: -size * 0.6, label: 'L' };
+    return { x: 0, z: 0, label: s };
+  });
+
+  const isCaries = kind === 'caries';
+  const isComposite = kind === 'composite_filling';
+  const isAmalgam = kind === 'amalgam';
+  const isInlay = kind === 'inlay';
+
+  const fillColor = isCaries ? dm.color :
+                    isComposite ? '#f5ecd0' :
+                    isAmalgam ? '#6e7078' :
+                    isInlay ? '#ece4cc' : '#e0e0e0';
+  const edgeColor = isCaries ? dm.edge : fillColor;
+
+  return (
+    <group ref={groupRef} position={offset} quaternion={quaternion}>
+      {surfaceOffsets.map((s, idx) => {
+        const r = size * (isCaries ? dm.radius * 0.7 : 0.7);
+        return (
+          <group key={s.label} position={[s.x, 0, s.z]}>
+            {/* Main lesion / restoration body — half-sphere into surface */}
+            <mesh ref={idx === 0 ? pulseRef : null} position={[0, isCaries ? -size * 0.05 : 0, 0]}>
+              <sphereGeometry args={[r, 28, 20, 0, Math.PI * 2, 0, Math.PI * 0.5]} />
+              <meshPhysicalMaterial
+                color={fillColor}
+                roughness={isCaries ? 0.95 : isAmalgam ? 0.55 : 0.35}
+                metalness={isAmalgam ? 0.6 : 0.05}
+                clearcoat={!isCaries && !isAmalgam ? 0.6 : 0}
+                clearcoatRoughness={0.15}
+              />
+            </mesh>
+
+            {/* Caries: organic edge halo (lighter brown ring around lesion) */}
+            {isCaries && (
+              <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, size * 0.02, 0]}>
+                <ringGeometry args={[r * 0.95, r * 1.35, 32]} />
+                <meshBasicMaterial color={edgeColor} transparent opacity={0.55} side={THREE.DoubleSide} depthWrite={false} />
+              </mesh>
+            )}
+
+            {/* Caries: random pit bumps for irregular cavity floor */}
+            {isCaries && depth !== 'incipient' && (
+              <>
+                {[[-0.3, 0.2], [0.25, -0.15], [0.1, 0.35], [-0.35, -0.3]].slice(0, depth === 'pulp_exposure' ? 4 : depth === 'deep_dentin' ? 4 : depth === 'dentin' ? 3 : 2).map((p, i) => (
+                  <mesh key={i} position={[p[0] * r * 0.7, -size * 0.12, p[1] * r * 0.7]}>
+                    <sphereGeometry args={[r * 0.18, 12, 10]} />
+                    <meshStandardMaterial color={dm.pit} roughness={1} />
+                  </mesh>
+                ))}
+              </>
+            )}
+
+            {/* Caries: pulp exposure — bright red pulp tissue visible at the bottom */}
+            {isCaries && depth === 'pulp_exposure' && (
+              <mesh position={[0, -size * 0.5, 0]}>
+                <sphereGeometry args={[r * 0.45, 18, 14]} />
+                <meshStandardMaterial color="#cc1111" emissive="#990000" emissiveIntensity={0.55} roughness={0.6} />
+              </mesh>
+            )}
+
+            {/* Surface label */}
+            <Html position={[0, r + size * 0.15, 0]} center distanceFactor={20}>
+              <div className="text-[9px] px-1.5 py-0.5 rounded whitespace-nowrap pointer-events-none"
+                   style={{ background: 'rgba(0,0,0,0.85)', color: isCaries ? '#fbbf24' : '#9ca3af', border: `1px solid ${isCaries ? 'rgba(251,191,36,0.4)' : 'rgba(255,255,255,0.1)'}` }}>
+                {s.label}
+              </div>
+            </Html>
+          </group>
+        );
+      })}
+
+      {/* Caries glow halo for severe stages */}
+      {isCaries && ['deep_dentin', 'pulp_exposure'].includes(depth) && (
+        <mesh position={[0, 0, 0]}>
+          <sphereGeometry args={[size * 1.6, 24, 24]} />
+          <meshBasicMaterial color="#ff3322" transparent opacity={0.18} depthWrite={false} />
+        </mesh>
+      )}
+
+      {/* Diagnosis label floating above */}
+      <Html position={[0, size * 1.3, 0]} center distanceFactor={20}>
+        <div className="bg-black/85 text-white text-[10px] px-2 py-0.5 rounded whitespace-nowrap pointer-events-none border border-white/10">
+          {fdi ? `#${fdi} · ` : ''}Class {classification || '?'} {surfList.join('')} · {humanKind(kind)}
+          {isCaries && depth ? ` · ${depth.replace('_', ' ')}` : ''}
+        </div>
+      </Html>
+    </group>
+  );
+}
+
+function humanKind(k) {
+  return ({
+    caries: 'Caries',
+    composite_filling: 'Composite',
+    amalgam: 'Amalgam',
+    inlay: 'Inlay',
+    sealant: 'Sealant',
+    veneer: 'Veneer',
+    all_ceramic_crown: 'All-Ceramic Crown',
+    pfm_crown: 'PFM Crown',
+    metal_crown: 'Metal Crown',
+    rct: 'RCT',
+    extraction: 'Extraction',
+  })[k] || k;
+}
+
+/* Per-stage anatomical visual — sits in local coords with +Y as the surface normal */
+function StageVisual({ stage, treatment, size }) {
+  // Treatments win
+  if (treatment === 'metal_crown') {
+    // Full metal crown — silver/gold metallic dome
+    return (
+      <mesh position={[0, size * 0.4, 0]}>
+        <sphereGeometry args={[size * 1.1, 24, 16, 0, Math.PI * 2, 0, Math.PI * 0.55]} />
+        <meshPhysicalMaterial
+          color="#c8ccd0"
+          metalness={0.85}
+          roughness={0.15}
+          clearcoat={1}
+          clearcoatRoughness={0.05}
+          reflectivity={0.95}
+        />
+      </mesh>
+    );
+  }
+  if (treatment === 'zirconia_crown' || treatment === 'all_ceramic_crown' || treatment === 'rct_crown' || stage === 'restored') {
+    // All-ceramic / zirconia crown — non-metallic, slight translucency, enamel-like
+    return (
+      <mesh position={[0, size * 0.4, 0]}>
+        <sphereGeometry args={[size * 1.1, 24, 16, 0, Math.PI * 2, 0, Math.PI * 0.55]} />
+        <meshPhysicalMaterial
+          color="#f8f0e0"
+          metalness={0.0}
+          roughness={0.18}
+          clearcoat={1}
+          clearcoatRoughness={0.08}
+          reflectivity={0.55}
+          transmission={0.08}
+          ior={1.5}
+          thickness={0.3}
+          attenuationColor="#f0e8d0"
+          attenuationDistance={1.5}
+        />
+      </mesh>
+    );
+  }
+  if (treatment === 'composite_filling') {
+    // Smooth white composite filling — dome that fills the cavity
+    return (
+      <mesh position={[0, size * 0.1, 0]}>
+        <sphereGeometry args={[size * 0.9, 20, 16, 0, Math.PI * 2, 0, Math.PI * 0.5]} />
+        <meshPhysicalMaterial
+          color="#f5ecd0"
+          metalness={0.05}
+          roughness={0.3}
+          clearcoat={0.6}
+          clearcoatRoughness={0.2}
+        />
+      </mesh>
+    );
+  }
+  if (treatment === 'root_canal') {
+    // Rust-colored sealed cavity (gutta-percha visible)
+    return (
+      <mesh position={[0, size * 0.05, 0]}>
+        <sphereGeometry args={[size * 0.85, 20, 16, 0, Math.PI * 2, 0, Math.PI * 0.5]} />
+        <meshStandardMaterial color="#a86530" roughness={0.6} metalness={0.1} />
+      </mesh>
+    );
+  }
+
+  // Disease stages — progressive cavity
+  switch (stage) {
+    case 'enamel':
+      // Small brown demineralization patch
+      return (
+        <mesh position={[0, size * 0.02, 0]}>
+          <sphereGeometry args={[size * 0.5, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.3]} />
+          <meshStandardMaterial color="#8b6f3a" roughness={0.85} />
+        </mesh>
+      );
+    case 'dentin':
+      // Bigger dark brown cavity
+      return (
+        <group>
+          <mesh position={[0, -size * 0.05, 0]}>
+            <sphereGeometry args={[size * 0.85, 18, 14, 0, Math.PI * 2, 0, Math.PI * 0.45]} />
+            <meshStandardMaterial color="#3d2814" roughness={0.95} />
+          </mesh>
+          <mesh position={[0, -size * 0.02, 0]}>
+            <sphereGeometry args={[size * 0.55, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.5]} />
+            <meshStandardMaterial color="#1a0f08" roughness={1} />
+          </mesh>
+        </group>
+      );
+    case 'pulp':
+      // Black hole going deep with red pulp visible inside
+      return (
+        <group>
+          <mesh position={[0, -size * 0.15, 0]}>
+            <sphereGeometry args={[size * 1.0, 20, 14, 0, Math.PI * 2, 0, Math.PI * 0.5]} />
+            <meshStandardMaterial color="#0a0503" roughness={1} />
+          </mesh>
+          <mesh position={[0, -size * 0.4, 0]}>
+            <sphereGeometry args={[size * 0.4, 16, 12]} />
+            <meshStandardMaterial color="#cc1111" emissive="#aa0000" emissiveIntensity={0.6} roughness={0.7} />
+          </mesh>
+        </group>
+      );
+    case 'abscess':
+      // Severe — large dark hole + swollen red inflammation
+      return (
+        <group>
+          <mesh position={[0, -size * 0.2, 0]}>
+            <sphereGeometry args={[size * 1.2, 20, 14, 0, Math.PI * 2, 0, Math.PI * 0.55]} />
+            <meshStandardMaterial color="#000" roughness={1} />
+          </mesh>
+          <mesh position={[0, size * 0.1, 0]}>
+            <sphereGeometry args={[size * 1.5, 24, 16, 0, Math.PI * 2, 0, Math.PI * 0.4]} />
+            <meshStandardMaterial color="#aa1a0a" emissive="#660000" emissiveIntensity={0.4} roughness={0.5} transparent opacity={0.7} />
+          </mesh>
+        </group>
+      );
+    case 'extracted':
+      // Empty socket — dark concave depression
+      return (
+        <mesh position={[0, -size * 0.1, 0]} rotation={[Math.PI, 0, 0]}>
+          <sphereGeometry args={[size * 0.9, 20, 14, 0, Math.PI * 2, 0, Math.PI * 0.45]} />
+          <meshStandardMaterial color="#5a2020" roughness={0.9} />
+        </mesh>
+      );
+    default:
+      // Healthy — subtle ring marker so the user knows where they clicked
+      return (
+        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, size * 0.02, 0]}>
+          <ringGeometry args={[size * 0.5, size * 0.7, 32]} />
+          <meshBasicMaterial color="#4ade80" transparent opacity={0.6} side={THREE.DoubleSide} depthWrite={false} />
+        </mesh>
+      );
+  }
+}
+
+/* ── Big translucent "aura" sphere highlighting the affected zone ── */
+
+function DiseaseAura({ position, radius, color, pulse }) {
+  const meshRef = useRef();
+  useFrameImpl(({ clock }) => {
+    if (!meshRef.current) return;
+    const t = clock.elapsedTime;
+    const baseOpacity = pulse ? 0.45 : 0.32;
+    meshRef.current.material.opacity = baseOpacity + Math.sin(t * (pulse ? 3 : 1.2)) * 0.12;
+    const baseScale = 1 + (pulse ? Math.sin(t * 3) * 0.08 : Math.sin(t * 1.2) * 0.04);
+    meshRef.current.scale.set(baseScale, baseScale, baseScale);
+  });
+
+  return (
+    <mesh ref={meshRef} position={position}>
+      <sphereGeometry args={[radius, 24, 24]} />
+      <meshBasicMaterial color={color} transparent opacity={0.4} depthWrite={false} />
     </mesh>
   );
+}
+
+/* ── Pulsing surface marker ─────────────────────────────────── */
+
+function PulseMarker({ position, color, pulse }) {
+  const ringRef = useRef();
+  const dotRef = useRef();
+  useFrameSafe(({ clock }) => {
+    const t = clock.elapsedTime;
+    if (ringRef.current) {
+      const s = pulse ? 1 + Math.sin(t * 3) * 0.3 : 1 + Math.sin(t * 1.2) * 0.1;
+      ringRef.current.scale.set(s, s, s);
+      ringRef.current.material.opacity = pulse ? 0.6 + Math.sin(t * 3) * 0.3 : 0.5;
+    }
+    if (dotRef.current && pulse) {
+      dotRef.current.material.emissiveIntensity = 0.7 + Math.sin(t * 3) * 0.4;
+    }
+  });
+
+  return (
+    <group position={position}>
+      <mesh ref={dotRef}>
+        <sphereGeometry args={[0.5, 16, 16]} />
+        <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.7} />
+      </mesh>
+      <mesh ref={ringRef} rotation={[-Math.PI / 2, 0, 0]}>
+        <ringGeometry args={[0.7, 1.0, 32]} />
+        <meshBasicMaterial color={color} transparent opacity={0.6} side={THREE.DoubleSide} />
+      </mesh>
+    </group>
+  );
+}
+
+/* ── Connector line between scan marker and callout tooth ──── */
+
+function ConnectorLine({ from, to, color }) {
+  return (
+    <Line
+      points={[from, to]}
+      color={color}
+      lineWidth={1.5}
+      dashed
+      dashSize={0.4}
+      gapSize={0.25}
+      transparent
+      opacity={0.7}
+    />
+  );
+}
+
+/* Small wrapper so PulseMarker can call useFrame without crashing if drei tree changes */
+function useFrameSafe(cb) {
+  // Imported via @react-three/fiber at top of file
+  // Local re-export to keep PulseMarker self-contained
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  useFrameImpl(cb);
 }
 
 /* ── Tooth data generator ───────────────────────────────────── */
@@ -929,44 +1194,13 @@ function generateTeethData() {
 
 /* ── Procedural Dental Arch ─────────────────────────────────── */
 
-function PlaceholderArch({ simulation, activeStateIndex, clinicalPathology, pickedTooth }) {
+function PlaceholderArch({ simulation, activeStateIndex }) {
   const groupRef = useRef();
   const activeState = simulation?.states?.[activeStateIndex];
   const targetTeeth = simulation?.target_teeth || [];
 
   const teeth = useMemo(() => generateTeethData(), []);
   const isPerioInflamed = activeState?.clinical_metrics?.pocket_depth_mm > 5;
-
-  // Map clinical pathology kind → stage/treatment for ToothOverlay
-  const pathologyState = useMemo(() => {
-    if (!clinicalPathology?.kind) return null;
-    const { kind, depth } = clinicalPathology;
-    const stageMap = {
-      incipient: 'enamel', enamel: 'enamel',
-      dentin: 'dentin', deep_dentin: 'dentin', pulp_exposure: 'pulp',
-    };
-    const treatmentMap = {
-      composite_filling: 'composite_filling',
-      amalgam: 'composite_filling',
-      inlay: 'composite_filling',
-      all_ceramic_crown: 'zirconia_crown',
-      pfm_crown: 'zirconia_crown',
-      metal_crown: 'metal_crown',
-      rct: 'root_canal',
-    };
-    const stage = kind === 'caries' ? (stageMap[depth] || 'enamel') :
-                  kind === 'extraction' ? 'extracted' : 'restored';
-    const treatment = treatmentMap[kind] || null;
-    return {
-      clinical_metrics: {
-        stage,
-        treatment,
-        depth_mm: { incipient: 0.5, enamel: 1.5, dentin: 3, deep_dentin: 4.5, pulp_exposure: 6 }[depth] || 2,
-        reversible: stage === 'enamel',
-        risk: stage === 'pulp' || stage === 'abscess' ? 'high' : stage === 'dentin' ? 'moderate' : 'low',
-      },
-    };
-  }, [clinicalPathology]);
 
   return (
     <group ref={groupRef} rotation={[0.15, 0, 0]}>
@@ -988,19 +1222,9 @@ function PlaceholderArch({ simulation, activeStateIndex, clinicalPathology, pick
       {/* Individual teeth */}
       {teeth.map((tooth) => {
         const isTarget = targetTeeth.includes(tooth.fdi);
-        const isPickedClinical = tooth.fdi === pickedTooth && pathologyState;
         return (
           <group key={tooth.fdi} position={[tooth.x, tooth.y, tooth.z]} rotation={[0, tooth.angle, 0]}>
-            {/* Clinical pathology overlay takes priority over simulation overlay */}
-            {isPickedClinical ? (
-              <ToothOverlay
-                state={pathologyState}
-                module={simulation?.module}
-                targetTeeth={[pickedTooth]}
-                toothNumber={tooth.fdi}
-                toothSize={[tooth.width, tooth.height, tooth.depth]}
-              />
-            ) : isTarget && activeState ? (
+            {isTarget && activeState ? (
               <ToothOverlay
                 state={activeState}
                 module={simulation?.module}
@@ -1014,7 +1238,6 @@ function PlaceholderArch({ simulation, activeStateIndex, clinicalPathology, pick
             {/* Tooth number label */}
             <Html position={[0, tooth.arch === 'upper' ? 2.0 : -2.0, 0]} center>
               <div className={`text-[9px] px-1 rounded select-none ${
-                isPickedClinical ? 'bg-amber-400 text-black font-bold' :
                 isTarget ? 'bg-white text-black font-bold' : 'text-gray-600'
               }`}>
                 {tooth.fdi}
@@ -1024,15 +1247,8 @@ function PlaceholderArch({ simulation, activeStateIndex, clinicalPathology, pick
         );
       })}
 
-      {/* Clinical pathology card — floats above the arch */}
-      {clinicalPathology?.kind && pickedTooth && (
-        <Html position={[0, 12, 0]} center>
-          <PathologyCard pathology={clinicalPathology} tooth={pickedTooth} />
-        </Html>
-      )}
-
       {/* State label */}
-      {activeState?.label && !clinicalPathology?.kind && (
+      {activeState?.label && (
         <Html position={[0, 10, 0]} center>
           <div className="bg-black/90 text-white px-4 py-2 rounded-lg text-xs font-medium whitespace-nowrap border border-white/10">
             {activeState.label}
@@ -1040,171 +1256,6 @@ function PlaceholderArch({ simulation, activeStateIndex, clinicalPathology, pick
         </Html>
       )}
     </group>
-  );
-}
-
-/* ── Clinical badge — always-visible overlay on the scan ──── */
-
-function ClinicalBadge({ pathology, tooth, onReset }) {
-  const { kind, depth, classification, surfaces } = pathology;
-
-  const depthColors = {
-    incipient: '#fbbf24', enamel: '#f59e0b',
-    dentin: '#d97706', deep_dentin: '#b45309', pulp_exposure: '#ef4444',
-  };
-  const kindLabels = {
-    caries: 'Caries (Cavity)', composite_filling: 'Composite Filling',
-    amalgam: 'Amalgam Filling', inlay: 'Inlay/Onlay',
-    all_ceramic_crown: 'All-Ceramic Crown', pfm_crown: 'PFM Crown',
-    metal_crown: 'Full Metal Crown', rct: 'Root Canal Treatment',
-    extraction: 'Extraction', sealant: 'Sealant', veneer: 'Veneer',
-  };
-
-  const isCaries = kind === 'caries';
-  const isRestoration = !isCaries && kind !== 'extraction';
-  const dotColor = isCaries ? (depthColors[depth] || '#f59e0b') : isRestoration ? '#4ade80' : '#f87171';
-  const borderColor = dotColor + '55';
-
-  return (
-    <div style={{
-      fontFamily: 'system-ui, sans-serif',
-      background: 'rgba(0,0,0,0.92)',
-      border: `1.5px solid ${borderColor}`,
-      borderRadius: 10,
-      padding: '10px 16px',
-      minWidth: 260,
-      boxShadow: `0 0 24px ${dotColor}33, 0 4px 20px rgba(0,0,0,0.6)`,
-      pointerEvents: 'none',
-      userSelect: 'none',
-    }}>
-      {/* Header row */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-        <div style={{
-          width: 11, height: 11, borderRadius: '50%',
-          background: dotColor,
-          boxShadow: `0 0 10px ${dotColor}`,
-          flexShrink: 0,
-          animation: isCaries && depth === 'pulp_exposure' ? 'pulse 1s ease-in-out infinite' : 'none',
-        }} />
-        <span style={{ fontSize: 14, fontWeight: 700, color: '#fff' }}>
-          Tooth #{tooth} — {kindLabels[kind] || kind}
-        </span>
-      </div>
-
-      {/* Classification + Surfaces row */}
-      {classification && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-          <span style={{ fontSize: 11, color: '#9ca3af' }}>
-            Class {classification}
-          </span>
-          {surfaces?.length > 0 && (
-            <div style={{ display: 'flex', gap: 4 }}>
-              {surfaces.map(s => (
-                <span key={s} style={{
-                  fontSize: 11, fontWeight: 700, color: '#f59e0b',
-                  background: 'rgba(245,158,11,0.15)',
-                  border: '1px solid rgba(245,158,11,0.4)',
-                  borderRadius: 4, padding: '1px 6px',
-                }}>
-                  {s}
-                </span>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Depth bar */}
-      {isCaries && depth && (
-        <div style={{ marginTop: 4 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-            <span style={{ fontSize: 10, color: '#6b7280' }}>Depth / Extent</span>
-            <span style={{ fontSize: 10, fontWeight: 600, color: dotColor, textTransform: 'capitalize' }}>
-              {depth.replace('_', ' ')}
-            </span>
-          </div>
-          {/* Visual depth progress bar */}
-          <div style={{ height: 5, background: 'rgba(255,255,255,0.08)', borderRadius: 3, overflow: 'hidden' }}>
-            <div style={{
-              height: '100%',
-              borderRadius: 3,
-              background: `linear-gradient(90deg, #fbbf24, ${dotColor})`,
-              width: { incipient: '12%', enamel: '30%', dentin: '55%', deep_dentin: '78%', pulp_exposure: '100%' }[depth] || '50%',
-              transition: 'width 0.4s ease',
-              boxShadow: `0 0 6px ${dotColor}`,
-            }} />
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 3 }}>
-            {['Incipient','Enamel','Dentin','Deep Dentin','Pulp'].map((l, i) => (
-              <span key={i} style={{ fontSize: 8, color: '#4b5563' }}>{l}</span>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ── Pathology info card (React DOM, not Three.js) ────────── */
-
-function PathologyCard({ pathology, tooth }) {
-  const { kind, depth, classification, surfaces } = pathology;
-
-  const depthColors = {
-    incipient: '#fbbf24', enamel: '#f59e0b',
-    dentin: '#d97706', deep_dentin: '#b45309', pulp_exposure: '#dc2626',
-  };
-  const kindLabels = {
-    caries: 'Caries (Cavity)', composite_filling: 'Composite Filling',
-    amalgam: 'Amalgam Filling', inlay: 'Inlay/Onlay',
-    all_ceramic_crown: 'All-Ceramic Crown', pfm_crown: 'PFM Crown',
-    metal_crown: 'Full Metal Crown', rct: 'Root Canal Treatment',
-    extraction: 'Extraction', sealant: 'Sealant', veneer: 'Veneer',
-  };
-  const depthColor = depthColors[depth] || '#9ca3af';
-  const isCaries = kind === 'caries';
-
-  return (
-    <div
-      className="pointer-events-none select-none"
-      style={{
-        fontFamily: 'system-ui, sans-serif',
-        background: 'rgba(0,0,0,0.92)',
-        border: `1px solid ${isCaries ? depthColor + '55' : 'rgba(255,255,255,0.12)'}`,
-        borderRadius: 10,
-        padding: '10px 14px',
-        minWidth: 220,
-        boxShadow: isCaries ? `0 0 18px ${depthColor}33` : '0 4px 16px rgba(0,0,0,0.5)',
-      }}
-    >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-        <div style={{
-          width: 10, height: 10, borderRadius: '50%',
-          background: isCaries ? depthColor : '#4ade80',
-          boxShadow: `0 0 8px ${isCaries ? depthColor : '#4ade80'}`,
-          flexShrink: 0,
-        }} />
-        <span style={{ fontSize: 13, fontWeight: 700, color: '#fff' }}>
-          Tooth #{tooth}
-        </span>
-      </div>
-      <div style={{ fontSize: 12, color: '#e5e7eb', marginBottom: 4 }}>
-        {kindLabels[kind] || kind}
-      </div>
-      {classification && (
-        <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 2 }}>
-          Class {classification}{surfaces?.length ? ' · ' + surfaces.join('') : ''}
-        </div>
-      )}
-      {isCaries && depth && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 6 }}>
-          <div style={{ width: 7, height: 7, borderRadius: '50%', background: depthColor }} />
-          <span style={{ fontSize: 11, color: depthColor, fontWeight: 600, textTransform: 'capitalize' }}>
-            {depth.replace('_', ' ')}
-          </span>
-        </div>
-      )}
-    </div>
   );
 }
 
