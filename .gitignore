@@ -15,13 +15,19 @@ venv/
 *.OBJ
 *.ply
 
-# Tooth model library — allow OBJs (used by progression popup), block heavy textures
+# Tooth model library — allow OBJs and standardized texture maps
+# (diffuse/normal/ao). Block any other large source-export artifacts.
 !frontend/public/teeth/**/*.OBJ
 !frontend/public/teeth/**/*.obj
 frontend/public/teeth/**/*.png
 frontend/public/teeth/**/*.PNG
 frontend/public/teeth/**/*.jpg
 frontend/public/teeth/**/*.jpeg
+!frontend/public/teeth/**/diffuse.png
+!frontend/public/teeth/**/diffuse.jpeg
+!frontend/public/teeth/**/normal.png
+!frontend/public/teeth/**/ao.png
+!frontend/public/teeth/**/ao.jpeg
 uploads/
 temp/
 *.log

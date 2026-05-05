@@ -150,6 +150,12 @@ const TOOTH_FILES = {
   },
 };
 
+// Texture extension per folder (from extract_tooth_textures.sh output).
+// Most folders end up with .png; the Carabelli zip ships .jpeg.
+const TEXTURE_EXT = {
+  'Maxillary First Molar with Cusp of Carabelli': { diffuse: 'jpeg', ao: 'jpeg' },
+};
+
 function getToothFileInfo(fdi) {
   if (!fdi) return null;
   const fdiStr = String(fdi);
@@ -160,8 +166,15 @@ function getToothFileInfo(fdi) {
   const isRight = (archDigit === '1' || archDigit === '4');
   const entry = TOOTH_FILES[arch]?.[pos];
   if (!entry) return null;
-  const url = `/teeth/${encodeURIComponent(entry.folder)}/${entry.obj}`;
-  return { url, mirror: isRight };
+  const folderEnc = encodeURIComponent(entry.folder);
+  const exts = TEXTURE_EXT[entry.folder] || { diffuse: 'png', normal: 'png', ao: 'png' };
+  return {
+    url: `/teeth/${folderEnc}/${entry.obj}`,
+    diffuseUrl: `/teeth/${folderEnc}/diffuse.${exts.diffuse || 'png'}`,
+    normalUrl: `/teeth/${folderEnc}/normal.${exts.normal || 'png'}`,
+    aoUrl: exts.ao ? `/teeth/${folderEnc}/ao.${exts.ao}` : null,
+    mirror: isRight,
+  };
 }
 
 /* ──────────────────────────────────────────────────────────────────────
@@ -171,6 +184,14 @@ function getToothFileInfo(fdi) {
 ─────────────────────────────────────────────────────────────────────── */
 function RealToothModel({ fileInfo, anatomy, phaseData }) {
   const obj = useLoader(OBJLoader, fileInfo.url);
+
+  // Diffuse map — Sketchfab tooth library texture copied into each folder
+  // via scripts/extract_tooth_textures.sh. Loaded as sRGB so it composites
+  // correctly with the phase-based color tint multiplier.
+  const diffuseMap = useLoader(THREE.TextureLoader, fileInfo.diffuseUrl);
+  if (diffuseMap) {
+    diffuseMap.colorSpace = THREE.SRGBColorSpace;
+  }
 
   // Normalize the loaded mesh: scale so it fills a target render size, and
   // center it on the origin. We do NOT split it into "crown vs root" using
@@ -211,15 +232,16 @@ function RealToothModel({ fileInfo, anatomy, phaseData }) {
 
   if (!geometry) return null;
 
-  // Phase-based crown tinting — applied to the whole OBJ. With an opaque
-  // material this reads as "stained tooth" without weird overlay geometry.
+  // Phase-based crown tinting — multiplied against the texture map. With an
+  // opaque material this reads as "stained tooth" without weird overlay geometry.
+  // Healthy = white (#fff = no tint, full texture color); disease = brown shift.
   let surfaceColor;
   if (phaseData.crownCap) surfaceColor = '#f5ecd8';                // ceramic crown
-  else if (phaseData.caries > 0.85) surfaceColor = '#3a2a1a';      // pulp/abscess — very dark
-  else if (phaseData.caries > 0.6)  surfaceColor = '#7a5a38';      // deep dentin — dark brown
-  else if (phaseData.caries > 0.3)  surfaceColor = '#c8a878';      // dentin — tan
-  else if (phaseData.caries > 0.05) surfaceColor = '#e6d8b4';      // enamel — slightly off-white
-  else                              surfaceColor = '#f4ead2';      // healthy
+  else if (phaseData.caries > 0.85) surfaceColor = '#5a3a20';      // pulp/abscess — heavy brown shift
+  else if (phaseData.caries > 0.6)  surfaceColor = '#9a7a48';      // deep dentin — brown
+  else if (phaseData.caries > 0.3)  surfaceColor = '#d6b888';      // dentin — tan
+  else if (phaseData.caries > 0.05) surfaceColor = '#f0e0c0';      // enamel — slight cream
+  else                              surfaceColor = '#ffffff';      // healthy — full texture
 
   // Pulp inflammation glows softly through the tooth
   const pulpEmissive = phaseData.pulpEmissive || 0;
@@ -242,10 +264,11 @@ function RealToothModel({ fileInfo, anatomy, phaseData }) {
       >
         <mesh geometry={geometry} castShadow receiveShadow>
           <meshPhysicalMaterial
+            map={diffuseMap || null}
             color={surfaceColor}
-            roughness={phaseData.crownCap ? 0.18 : 0.55}
-            clearcoat={phaseData.crownCap ? 0.9 : 0.15}
-            clearcoatRoughness={phaseData.crownCap ? 0.08 : 0.5}
+            roughness={phaseData.crownCap ? 0.18 : 0.45}
+            clearcoat={phaseData.crownCap ? 0.9 : 0.2}
+            clearcoatRoughness={phaseData.crownCap ? 0.08 : 0.45}
             metalness={0}
             emissive={emissiveColor}
             emissiveIntensity={emissiveIntensity}
