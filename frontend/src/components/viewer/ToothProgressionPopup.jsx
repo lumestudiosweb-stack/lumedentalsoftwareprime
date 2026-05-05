@@ -283,7 +283,9 @@ function RealToothModel({ fileInfo, anatomy, phaseData }) {
       >
         <mesh geometry={geometry} castShadow receiveShadow>
           <meshPhysicalMaterial
-            map={diffuseMap || null}
+            // Crown-cap (post-restoration) hides the natural-tooth texture so
+            // the whole tooth reads as uniform ceramic, not a tinted molar.
+            map={phaseData.crownCap ? null : (diffuseMap || null)}
             color={surfaceColor}
             roughness={phaseData.crownCap ? 0.18 : 0.45}
             clearcoat={phaseData.crownCap ? 0.9 : 0.2}
@@ -570,11 +572,11 @@ export default function ToothProgressionPopup({ tooth, pathology, onClose }) {
     <div
       style={{
         width: 460,
-        background: 'rgba(12,12,18,0.97)',
+        background: '#0a0a12',
         border: `1.5px solid ${accent}55`,
         borderRadius: 12,
         overflow: 'hidden',
-        boxShadow: `0 22px 60px rgba(0,0,0,0.75), 0 0 32px ${accent}33`,
+        boxShadow: `0 22px 60px rgba(0,0,0,0.85), 0 0 32px ${accent}33`,
         fontFamily: 'system-ui, -apple-system, sans-serif',
         pointerEvents: 'auto',
       }}
@@ -630,22 +632,19 @@ export default function ToothProgressionPopup({ tooth, pathology, onClose }) {
         </button>
       </div>
 
-      {/* 3D simulation */}
-      <div style={{ height: 280, background: 'radial-gradient(ellipse at center, #1a1a28 0%, #050508 100%)' }}>
+      {/* 3D simulation — static (no auto-spin). User can drag to rotate. */}
+      <div style={{ height: 280, background: '#0a0a12' }}>
         <Canvas camera={{ position: [0, 4, 28], fov: 32 }}>
-          <ambientLight intensity={0.55} />
+          <ambientLight intensity={0.6} />
           <directionalLight position={[6, 12, 8]} intensity={1.3} />
-          <directionalLight position={[-6, 6, -5]} intensity={0.45} color="#aaccff" />
-          <pointLight position={[0, -10, 6]} intensity={0.4} color="#ff8866" />
-          <SlowSpin>
-            <Suspense fallback={<ToothLoadingFallback />}>
-              {fileInfo ? (
-                <RealToothModel fileInfo={fileInfo} anatomy={anatomy} phaseData={phaseData} />
-              ) : (
-                <ToothModel anatomy={anatomy} phaseData={phaseData} />
-              )}
-            </Suspense>
-          </SlowSpin>
+          <directionalLight position={[-6, 6, -5]} intensity={0.4} color="#cce0ff" />
+          <Suspense fallback={<ToothLoadingFallback />}>
+            {fileInfo ? (
+              <RealToothModel fileInfo={fileInfo} anatomy={anatomy} phaseData={phaseData} />
+            ) : (
+              <ToothModel anatomy={anatomy} phaseData={phaseData} />
+            )}
+          </Suspense>
           <OrbitControls enableZoom enablePan={false} minDistance={16} maxDistance={48} maxPolarAngle={Math.PI * 0.9} />
         </Canvas>
       </div>
