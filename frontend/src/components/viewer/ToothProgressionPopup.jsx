@@ -129,14 +129,14 @@ function phaseDataForId(id) {
 ─────────────────────────────────────────────────────────────────────── */
 const TOOTH_FILES = {
   upper: {
-    1: { folder: 'maxillary left central incisor',  obj: 'UL1sketch1_1.OBJ' },
-    2: { folder: 'maxillary lateral incisor',        obj: 'UL2sketch_1.OBJ'  },
-    3: { folder: 'maxillary canine',                 obj: 'UL3sketch1_1.OBJ' },
-    4: { folder: 'maxillary first premolar',         obj: 'UL4sketch_1.OBJ'  },
-    5: { folder: 'Maxillary Second Premolar',        obj: 'UL5sketch_1.OBJ'  },
-    6: { folder: 'maxillary first molar',            obj: 'UL6sketch_1.OBJ'  },
-    7: { folder: 'maxillary second molar',           obj: 'UL7sketch_1.OBJ'  },
-    8: { folder: 'maxillary third molar',            obj: 'UL8sketch_1.OBJ'  },
+    1: { folder: 'maxillary left central incisor',                obj: 'UL1sketch1_1.OBJ' },
+    2: { folder: 'maxillary lateral incisor',                      obj: 'UL2sketch_1.OBJ'  },
+    3: { folder: 'maxillary canine',                               obj: 'UL3sketch1_1.OBJ' },
+    4: { folder: 'maxillary first premolar',                       obj: 'UL4sketch_1.OBJ'  },
+    5: { folder: 'Maxillary Second Premolar',                      obj: 'UL5sketch_1.OBJ'  },
+    6: { folder: 'Maxillary First Molar with Cusp of Carabelli',   obj: 'UL4sketch_1.OBJ'  },
+    7: { folder: 'maxillary second molar',                         obj: 'UL7sketch_1.OBJ'  },
+    8: { folder: 'maxillary third molar',                          obj: 'UL8sketch_1.OBJ'  },
   },
   lower: {
     1: { folder: 'mandibular left central incisor',  obj: 'LL1sketch_1.OBJ'  },
@@ -325,6 +325,38 @@ function RealToothModel({ fileInfo, anatomy, phaseData }) {
           </group>
         );
       })}
+
+      {/* Caries lesion — dark fissure lines + decay cone penetrating real tooth crown */}
+      {phaseData.caries > 0 && !phaseData.crownCap && (
+        <group position={[0, anatomy.crownH * 0.95, 0]}>
+          {/* Surface stain disc — dark cavity blot on occlusal surface */}
+          <mesh position={[0, 0.01, 0]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={3}>
+            <circleGeometry args={[anatomy.crownW * 0.42 * phaseData.caries, 28]} />
+            <meshStandardMaterial color="#1a0a04" transparent opacity={0.95} side={THREE.DoubleSide} depthWrite={false} depthTest={false} />
+          </mesh>
+          {/* Branching cavity fissure lines radiating from the center */}
+          {[0, 1, 2, 3, 4, 5].map((i) => {
+            const angle = (i / 6) * Math.PI * 2;
+            const len = anatomy.crownW * 0.55 * phaseData.caries;
+            return (
+              <mesh
+                key={`fissure-${i}`}
+                position={[Math.cos(angle) * len * 0.5, 0.015, Math.sin(angle) * len * 0.5]}
+                rotation={[-Math.PI / 2, 0, -angle]}
+                renderOrder={4}
+              >
+                <planeGeometry args={[len, anatomy.crownW * 0.08 * phaseData.caries]} />
+                <meshStandardMaterial color="#0a0301" transparent opacity={0.9} side={THREE.DoubleSide} depthWrite={false} depthTest={false} />
+              </mesh>
+            );
+          })}
+          {/* Decay cone descending into the crown — visible through translucent enamel */}
+          <mesh position={[0, -anatomy.crownH * 0.5 * phaseData.cariesDepth, 0]}>
+            <coneGeometry args={[anatomy.crownW * 0.34 * phaseData.caries, anatomy.crownH * phaseData.cariesDepth, 22, 1, true]} />
+            <meshStandardMaterial color="#0a0301" side={THREE.DoubleSide} roughness={1} transparent opacity={0.95} />
+          </mesh>
+        </group>
+      )}
     </group>
   );
 }
