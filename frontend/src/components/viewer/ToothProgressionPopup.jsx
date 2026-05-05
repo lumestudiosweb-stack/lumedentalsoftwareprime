@@ -172,15 +172,19 @@ function getToothFileInfo(fdi) {
 function RealToothModel({ fileInfo, anatomy, phaseData }) {
   const obj = useLoader(OBJLoader, fileInfo.url);
 
-  // Normalize the loaded mesh into our coordinate system once
-  const { geometry, scale, centerOffset } = useMemo(() => {
+  // Normalize the loaded mesh: scale so it fills a target render size, and
+  // center it on the origin. We do NOT split it into "crown vs root" using
+  // procedural anatomy values — the OBJ is the source of truth for shape.
+  const { geometry, scale, centerOffset, bbSize, bbTopY } = useMemo(() => {
     let mergedGeo = null;
     obj.traverse((child) => {
       if (child.isMesh && !mergedGeo) {
         mergedGeo = child.geometry.clone();
       }
     });
-    if (!mergedGeo) return { geometry: null, scale: 1, centerOffset: [0, 0, 0] };
+    if (!mergedGeo) {
+      return { geometry: null, scale: 1, centerOffset: [0, 0, 0], bbSize: null, bbTopY: 0 };
+    }
 
     if (!mergedGeo.attributes.normal) mergedGeo.computeVertexNormals();
     mergedGeo.computeBoundingBox();
@@ -188,45 +192,50 @@ function RealToothModel({ fileInfo, anatomy, phaseData }) {
     const size = new THREE.Vector3();
     bb.getSize(size);
 
-    // Target height: crown + longest root (matches our procedural anatomy)
+    // Target overall display height — matches the procedural fallback envelope
+    // so camera framing in the popup stays consistent across teeth.
     const maxRoot = Math.max(...anatomy.roots.map((r) => r.length));
     const targetHeight = anatomy.crownH + maxRoot;
     const s = targetHeight / Math.max(size.y, 0.001);
 
-    // Re-center on origin (so we control positioning ourselves)
     const center = new THREE.Vector3();
     bb.getCenter(center);
     return {
       geometry: mergedGeo,
       scale: s,
       centerOffset: [-center.x * s, -center.y * s, -center.z * s],
+      bbSize: [size.x * s, size.y * s, size.z * s],
+      bbTopY: (bb.max.y - center.y) * s,
     };
   }, [obj, anatomy]);
 
   if (!geometry) return null;
 
-  const maxRoot = Math.max(...anatomy.roots.map((r) => r.length));
-  const apexY = -maxRoot;
-  const crownTopY = anatomy.crownH;
+  // Phase-based crown tinting — applied to the whole OBJ. With an opaque
+  // material this reads as "stained tooth" without weird overlay geometry.
+  let surfaceColor;
+  if (phaseData.crownCap) surfaceColor = '#f5ecd8';                // ceramic crown
+  else if (phaseData.caries > 0.85) surfaceColor = '#3a2a1a';      // pulp/abscess — very dark
+  else if (phaseData.caries > 0.6)  surfaceColor = '#7a5a38';      // deep dentin — dark brown
+  else if (phaseData.caries > 0.3)  surfaceColor = '#c8a878';      // dentin — tan
+  else if (phaseData.caries > 0.05) surfaceColor = '#e6d8b4';      // enamel — slightly off-white
+  else                              surfaceColor = '#f4ead2';      // healthy
 
-  // Tooth surface color shifts based on disease/treatment phase
-  const surfaceColor = phaseData.crownCap
-    ? '#f8f0e0'                                   // crown cap (ceramic)
-    : phaseData.caries > 0.5
-      ? phaseData.caries > 0.85 ? '#7a5230' : '#c4a878'   // dark/medium decay
-      : phaseData.caries > 0.2
-        ? '#e6d4a8'                               // early staining
-        : '#fff5e0';                              // healthy enamel
+  // Pulp inflammation glows softly through the tooth
+  const pulpEmissive = phaseData.pulpEmissive || 0;
+  const emissiveColor = phaseData.caries > 0.7 ? '#3a0a02'
+                       : pulpEmissive > 0      ? '#5a1a08'
+                       : '#000';
+  const emissiveIntensity = phaseData.caries > 0.7 ? 0.35 : pulpEmissive * 0.4;
+
+  // Cavity surface stain — sits ON the OBJ's actual top vertex, NOT on
+  // procedural anatomy. Tiny, occlusal-only, no protruding cone.
+  const stainRadius = bbSize ? Math.min(bbSize[0], bbSize[2]) * 0.32 * phaseData.caries : 0;
 
   return (
-    <group position={[0, -(crownTopY + apexY) / 2, 0]}>
-      {/* Alveolar bone backdrop */}
-      <mesh position={[0, -maxRoot * 0.5, 0]}>
-        <boxGeometry args={[Math.max(anatomy.crownW * 2.6, 9), maxRoot, Math.max(anatomy.crownD * 2.6, 6)]} />
-        <meshStandardMaterial color="#e8d8b8" transparent opacity={0.18} roughness={0.95} depthWrite={false} />
-      </mesh>
-
-      {/* The REAL tooth — loaded from OBJ, scaled into place */}
+    <group>
+      {/* The REAL tooth — loaded from OBJ, scaled and centered on origin.
+          Mirror right-side teeth so the cusp asymmetry reads correctly. */}
       <group
         scale={[fileInfo.mirror ? -scale : scale, scale, scale]}
         position={centerOffset}
@@ -234,128 +243,46 @@ function RealToothModel({ fileInfo, anatomy, phaseData }) {
         <mesh geometry={geometry} castShadow receiveShadow>
           <meshPhysicalMaterial
             color={surfaceColor}
-            roughness={phaseData.crownCap ? 0.15 : 0.42}
-            clearcoat={phaseData.crownCap ? 1 : 0.25}
-            clearcoatRoughness={phaseData.crownCap ? 0.05 : 0.4}
-            transparent={!phaseData.crownCap}
-            opacity={phaseData.crownCap ? 1 : 0.75}
-            transmission={phaseData.crownCap ? 0 : 0.25}
-            ior={1.55}
-            thickness={0.5}
-            depthWrite={phaseData.crownCap}
-            emissive={phaseData.caries > 0.7 ? '#2a0a02' : '#000'}
-            emissiveIntensity={phaseData.caries > 0.7 ? 0.4 : 0}
+            roughness={phaseData.crownCap ? 0.18 : 0.55}
+            clearcoat={phaseData.crownCap ? 0.9 : 0.15}
+            clearcoatRoughness={phaseData.crownCap ? 0.08 : 0.5}
+            metalness={0}
+            emissive={emissiveColor}
+            emissiveIntensity={emissiveIntensity}
           />
         </mesh>
       </group>
 
-      {/* Pulp chamber — glows red when inflamed, visible through translucent enamel */}
-      {!phaseData.crownCap && (
-        <mesh position={[0, anatomy.crownH * 0.4, 0]}>
-          <boxGeometry args={[anatomy.crownW * 0.42, anatomy.crownH * 0.55, anatomy.crownD * 0.42]} />
+      {/* Cavity surface stain — small dark blot on the occlusal surface,
+          sized in real OBJ space so it never sticks out beyond the silhouette */}
+      {phaseData.caries > 0.15 && !phaseData.crownCap && bbSize && (
+        <mesh position={[0, bbTopY + 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={3}>
+          <circleGeometry args={[stainRadius, 32]} />
           <meshStandardMaterial
-            color={phaseData.pulpColor}
-            emissive={phaseData.pulpColor}
-            emissiveIntensity={phaseData.pulpEmissive}
+            color="#1a0a04"
             transparent
-            opacity={phaseData.accessHole ? 0.4 : 0.85}
+            opacity={Math.min(0.92, 0.55 + phaseData.caries * 0.5)}
+            side={THREE.DoubleSide}
             depthWrite={false}
+            polygonOffset
+            polygonOffsetFactor={-2}
           />
         </mesh>
       )}
 
-      {/* Access opening — drilled black hole through occlusal surface */}
-      {phaseData.accessHole && (
-        <mesh position={[0, anatomy.crownH * 0.65, 0]}>
-          <cylinderGeometry args={[anatomy.crownW * 0.18, anatomy.crownW * 0.16, anatomy.crownH * 0.9, 24]} />
-          <meshStandardMaterial color="#000" />
+      {/* Access cavity (RCT prep) — a small dark drilled-out spot on the
+          occlusal surface. Same surface-only logic, no protruding cylinder. */}
+      {phaseData.accessHole && bbSize && (
+        <mesh position={[0, bbTopY + 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={3}>
+          <circleGeometry args={[Math.min(bbSize[0], bbSize[2]) * 0.18, 32]} />
+          <meshStandardMaterial
+            color="#0a0a0a"
+            side={THREE.DoubleSide}
+            depthWrite={false}
+            polygonOffset
+            polygonOffsetFactor={-2}
+          />
         </mesh>
-      )}
-
-      {/* Per-root: canal + lesion + endo file + gutta cone */}
-      {anatomy.roots.map((r, i) => {
-        const rootCenterY = -r.length * 0.5;
-        const apex = -r.length;
-        return (
-          <group key={`root-${i}`}>
-            {/* Root canal — colored cylinder running through root */}
-            <mesh position={[r.x, rootCenterY, r.z || 0]}>
-              <cylinderGeometry args={[r.topR * 0.22, r.bottomR * 0.55, r.length * 0.97, 14]} />
-              <meshStandardMaterial
-                color={canalColor(phaseData.canalState)}
-                emissive={phaseData.canalState === 'infected' ? '#3a0000' : '#000'}
-                emissiveIntensity={phaseData.canalState === 'infected' ? 0.4 : 0}
-                roughness={phaseData.canalState === 'gutta' ? 0.5 : 0.7}
-                transparent
-                opacity={0.85}
-                depthWrite={false}
-              />
-            </mesh>
-
-            {/* Periapical lesion at root tip */}
-            {phaseData.apicalLesion > 0.05 && (
-              <mesh position={[r.x, apex - 0.4, r.z || 0]}>
-                <sphereGeometry args={[0.55 + phaseData.apicalLesion * 0.7, 16, 12]} />
-                <meshStandardMaterial
-                  color={phaseData.apicalLesion > 0.6 ? '#5a1a08' : '#7a3a18'}
-                  emissive="#3a0c04"
-                  emissiveIntensity={phaseData.apicalLesion * 0.3}
-                  transparent
-                  opacity={0.85}
-                  depthWrite={false}
-                />
-              </mesh>
-            )}
-
-            {/* Endo file — silver instrument going down canal during shaping */}
-            {phaseData.fileDepth > 0 && (
-              <mesh position={[r.x, anatomy.crownH * 0.5 - r.length * phaseData.fileDepth * 0.5, r.z || 0]}>
-                <cylinderGeometry args={[0.08, 0.04, anatomy.crownH + r.length * phaseData.fileDepth, 8]} />
-                <meshStandardMaterial color="#d8d8e0" metalness={0.85} roughness={0.18} />
-              </mesh>
-            )}
-
-            {/* Gutta-percha cone */}
-            {phaseData.gutta > 0 && (
-              <mesh position={[r.x, rootCenterY, r.z || 0]}>
-                <coneGeometry args={[r.topR * 0.2, r.length * 0.97, 14]} />
-                <meshStandardMaterial color="#c95818" roughness={0.6} />
-              </mesh>
-            )}
-          </group>
-        );
-      })}
-
-      {/* Caries lesion — dark fissure lines + decay cone penetrating real tooth crown */}
-      {phaseData.caries > 0 && !phaseData.crownCap && (
-        <group position={[0, anatomy.crownH * 0.95, 0]}>
-          {/* Surface stain disc — dark cavity blot on occlusal surface */}
-          <mesh position={[0, 0.01, 0]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={3}>
-            <circleGeometry args={[anatomy.crownW * 0.42 * phaseData.caries, 28]} />
-            <meshStandardMaterial color="#1a0a04" transparent opacity={0.95} side={THREE.DoubleSide} depthWrite={false} depthTest={false} />
-          </mesh>
-          {/* Branching cavity fissure lines radiating from the center */}
-          {[0, 1, 2, 3, 4, 5].map((i) => {
-            const angle = (i / 6) * Math.PI * 2;
-            const len = anatomy.crownW * 0.55 * phaseData.caries;
-            return (
-              <mesh
-                key={`fissure-${i}`}
-                position={[Math.cos(angle) * len * 0.5, 0.015, Math.sin(angle) * len * 0.5]}
-                rotation={[-Math.PI / 2, 0, -angle]}
-                renderOrder={4}
-              >
-                <planeGeometry args={[len, anatomy.crownW * 0.08 * phaseData.caries]} />
-                <meshStandardMaterial color="#0a0301" transparent opacity={0.9} side={THREE.DoubleSide} depthWrite={false} depthTest={false} />
-              </mesh>
-            );
-          })}
-          {/* Decay cone descending into the crown — visible through translucent enamel */}
-          <mesh position={[0, -anatomy.crownH * 0.5 * phaseData.cariesDepth, 0]}>
-            <coneGeometry args={[anatomy.crownW * 0.34 * phaseData.caries, anatomy.crownH * phaseData.cariesDepth, 22, 1, true]} />
-            <meshStandardMaterial color="#0a0301" side={THREE.DoubleSide} roughness={1} transparent opacity={0.95} />
-          </mesh>
-        </group>
       )}
     </group>
   );
