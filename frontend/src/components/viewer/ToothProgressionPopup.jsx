@@ -185,11 +185,39 @@ function getToothFileInfo(fdi) {
 function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
   const obj = useLoader(OBJLoader, fileInfo.url);
 
-  // Clone the loaded OBJ once per fileInfo so we can attach our own
-  // material to it without mutating the cached loader result. We use the
-  // full hierarchy (some Sketchfab teeth ship more than one mesh inside
-  // the OBJ — the previous "first mesh only" approach scaled them wrong).
-  const clone = useMemo(() => obj.clone(true), [obj]);
+  // Clone the OBJ tree (deep) and bake centering + scaling directly into
+  // the clone's transform. Doing it on the OBJECT instead of via parent
+  // <group> wrappers eliminates any chance of transform-order issues and
+  // keeps Box3 math consistent with what's actually rendered.
+  const { clone, bbSize, bbTopY } = useMemo(() => {
+    const c = obj.clone(true);
+
+    const box = new THREE.Box3().setFromObject(c);
+    if (box.isEmpty()) {
+      return { clone: c, bbSize: null, bbTopY: 0 };
+    }
+
+    const size = new THREE.Vector3();
+    box.getSize(size);
+    const center = new THREE.Vector3();
+    box.getCenter(center);
+
+    const maxRoot = Math.max(...anatomy.roots.map((r) => r.length));
+    const targetHeight = anatomy.crownH + maxRoot;
+    const s = targetHeight / Math.max(size.y, 0.001);
+
+    // Mirror right-side teeth, scale to target height, then translate so
+    // the bbox center sits exactly at world origin.
+    c.scale.set(fileInfo.mirror ? -s : s, s, s);
+    c.position.set(-center.x * s * (fileInfo.mirror ? -1 : 1), -center.y * s, -center.z * s);
+    c.updateMatrixWorld(true);
+
+    return {
+      clone: c,
+      bbSize: [size.x * s, size.y * s, size.z * s],
+      bbTopY: (box.max.y - center.y) * s,
+    };
+  }, [obj, anatomy, fileInfo.mirror]);
 
   // Tell the popup the OBJ is ready — autoplay should only start once the
   // tooth is actually visible.
@@ -223,32 +251,6 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
       cancelled = true;
     };
   }, [fileInfo?.diffuseUrl]);
-
-  // Compute scale + centering using a Box3 of the FULL OBJ object (including
-  // every mesh in its tree). This is the bounding box that <primitive object={clone}>
-  // will actually render with, so framing stays correct even if the OBJ ships
-  // multiple sub-meshes.
-  const { scale, centerOffset, bbSize, bbTopY } = useMemo(() => {
-    const box = new THREE.Box3().setFromObject(clone);
-    if (box.isEmpty()) {
-      return { scale: 1, centerOffset: [0, 0, 0], bbSize: null, bbTopY: 0 };
-    }
-    const size = new THREE.Vector3();
-    box.getSize(size);
-    const center = new THREE.Vector3();
-    box.getCenter(center);
-
-    const maxRoot = Math.max(...anatomy.roots.map((r) => r.length));
-    const targetHeight = anatomy.crownH + maxRoot;
-    const s = targetHeight / Math.max(size.y, 0.001);
-
-    return {
-      scale: s,
-      centerOffset: [-center.x * s, -center.y * s, -center.z * s],
-      bbSize: [size.x * s, size.y * s, size.z * s],
-      bbTopY: (box.max.y - center.y) * s,
-    };
-  }, [clone, anatomy]);
 
   // Phase-based crown tinting — multiplied against the texture map. With an
   // opaque material this reads as "stained tooth" without weird overlay geometry.
@@ -300,14 +302,10 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
 
   return (
     <group>
-      {/* The REAL tooth — full OBJ tree, scaled and centered on origin.
-          Mirror right-side teeth so the cusp asymmetry reads correctly. */}
-      <group
-        scale={[fileInfo.mirror ? -scale : scale, scale, scale]}
-        position={centerOffset}
-      >
-        <primitive object={clone} />
-      </group>
+      {/* The REAL tooth — full OBJ tree. Centering, scaling, and right-side
+          mirroring are baked into the clone's transform above, so we render
+          it without any further parent-group adjustments. */}
+      <primitive object={clone} />
 
       {/* Cavity surface stain — small dark blot on the occlusal surface,
           sized in real OBJ space so it never sticks out beyond the silhouette */}
