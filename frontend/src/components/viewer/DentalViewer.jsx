@@ -143,7 +143,11 @@ export default function DentalViewer({ scanUrl, scanFormat, simulation, activeSt
 
         <Suspense fallback={<LoadingIndicator />}>
           {scanUrl ? (
-            <TreatmentJourney url={scanUrl} format={scanFormat} textureUrl={textureUrl} simulation={simulation} activeStateIndex={activeStateIndex} clinicalPathology={effectivePathology} pickedTooth={effectiveTooth} />
+            // Pass ONLY the dentist-picked pathology to TreatmentJourney so the
+            // scan stays clean during simulation playback. The popup (outside
+            // Canvas) handles the disease-progression visualization via
+            // effectivePathology which also covers simulation timeline states.
+            <TreatmentJourney url={scanUrl} format={scanFormat} textureUrl={textureUrl} simulation={simulation} activeStateIndex={activeStateIndex} clinicalPathology={clinicalPathology} pickedTooth={pickedTooth} />
           ) : (
             <PlaceholderArch simulation={simulation} activeStateIndex={activeStateIndex} clinicalPathology={effectivePathology} pickedTooth={effectiveTooth} />
           )}
