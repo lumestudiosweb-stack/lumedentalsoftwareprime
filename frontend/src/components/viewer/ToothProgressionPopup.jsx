@@ -185,13 +185,32 @@ function getToothFileInfo(fdi) {
 function RealToothModel({ fileInfo, anatomy, phaseData }) {
   const obj = useLoader(OBJLoader, fileInfo.url);
 
-  // Diffuse map — Sketchfab tooth library texture copied into each folder
-  // via scripts/extract_tooth_textures.sh. Loaded as sRGB so it composites
-  // correctly with the phase-based color tint multiplier.
-  const diffuseMap = useLoader(THREE.TextureLoader, fileInfo.diffuseUrl);
-  if (diffuseMap) {
-    diffuseMap.colorSpace = THREE.SRGBColorSpace;
-  }
+  // Diffuse map — loaded NON-BLOCKING via useState + TextureLoader.load()
+  // (NOT useLoader, which would suspend the whole component if the texture
+  // is slow/missing and leave the canvas blank). The OBJ renders the moment
+  // it's ready; the texture is applied as soon as it arrives.
+  const [diffuseMap, setDiffuseMap] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    if (!fileInfo?.diffuseUrl) return undefined;
+    const loader = new THREE.TextureLoader();
+    loader.load(
+      fileInfo.diffuseUrl,
+      (tex) => {
+        if (cancelled) {
+          tex.dispose();
+          return;
+        }
+        tex.colorSpace = THREE.SRGBColorSpace;
+        setDiffuseMap(tex);
+      },
+      undefined,
+      () => { /* swallow texture load errors — OBJ is still drawn */ }
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [fileInfo?.diffuseUrl]);
 
   // Normalize the loaded mesh: scale so it fills a target render size, and
   // center it on the origin. We do NOT split it into "crown vs root" using
