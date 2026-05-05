@@ -674,11 +674,17 @@ export default function ToothProgressionPopup({ tooth, pathology, onClose }) {
               <ToothModel anatomy={anatomy} phaseData={phaseData} />
             )}
           </Suspense>
+          {/* User can drag to rotate the tooth and inspect it from any angle.
+              No auto-spin, and zoom/pan are disabled so framing stays stable. */}
           <OrbitControls
             target={[0, 0, 0]}
-            enableRotate={false}
+            enableRotate
             enableZoom={false}
             enablePan={false}
+            autoRotate={false}
+            rotateSpeed={0.8}
+            minPolarAngle={Math.PI * 0.05}
+            maxPolarAngle={Math.PI * 0.95}
           />
         </Canvas>
       </div>
