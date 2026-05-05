@@ -649,10 +649,10 @@ export default function ToothProgressionPopup({ tooth, pathology, onClose }) {
         </button>
       </div>
 
-      {/* 3D simulation — static. No auto-spin, no manual rotate, no zoom.
-          Camera is locked so the tooth stays in one place at all times.
-          Background and lighting are bright enough that even heavily-stained
-          (deep caries / pulpitis) teeth still read clearly. */}
+      {/* 3D simulation — static. OrbitControls is included only to anchor the
+          camera target on the tooth (without it the camera has no lookAt and
+          the tooth ends up off-frame). All user interactions are disabled, so
+          the tooth stays perfectly still: no spin, no drag-rotate, no zoom. */}
       <div style={{ height: 280, background: '#1c1c28' }}>
         <Canvas camera={{ position: [0, 4, 28], fov: 32 }}>
           <ambientLight intensity={1.1} />
@@ -671,6 +671,12 @@ export default function ToothProgressionPopup({ tooth, pathology, onClose }) {
               <ToothModel anatomy={anatomy} phaseData={phaseData} />
             )}
           </Suspense>
+          <OrbitControls
+            target={[0, 0, 0]}
+            enableRotate={false}
+            enableZoom={false}
+            enablePan={false}
+          />
         </Canvas>
       </div>
 
