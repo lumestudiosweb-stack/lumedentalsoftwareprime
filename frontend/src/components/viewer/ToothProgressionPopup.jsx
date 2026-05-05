@@ -185,6 +185,12 @@ function getToothFileInfo(fdi) {
 function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
   const obj = useLoader(OBJLoader, fileInfo.url);
 
+  // Clone the loaded OBJ once per fileInfo so we can attach our own
+  // material to it without mutating the cached loader result. We use the
+  // full hierarchy (some Sketchfab teeth ship more than one mesh inside
+  // the OBJ — the previous "first mesh only" approach scaled them wrong).
+  const clone = useMemo(() => obj.clone(true), [obj]);
+
   // Tell the popup the OBJ is ready — autoplay should only start once the
   // tooth is actually visible.
   useEffect(() => {
@@ -218,44 +224,31 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
     };
   }, [fileInfo?.diffuseUrl]);
 
-  // Normalize the loaded mesh: scale so it fills a target render size, and
-  // center it on the origin. We do NOT split it into "crown vs root" using
-  // procedural anatomy values — the OBJ is the source of truth for shape.
-  const { geometry, scale, centerOffset, bbSize, bbTopY } = useMemo(() => {
-    let mergedGeo = null;
-    obj.traverse((child) => {
-      if (child.isMesh && !mergedGeo) {
-        mergedGeo = child.geometry.clone();
-      }
-    });
-    if (!mergedGeo) {
-      return { geometry: null, scale: 1, centerOffset: [0, 0, 0], bbSize: null, bbTopY: 0 };
+  // Compute scale + centering using a Box3 of the FULL OBJ object (including
+  // every mesh in its tree). This is the bounding box that <primitive object={clone}>
+  // will actually render with, so framing stays correct even if the OBJ ships
+  // multiple sub-meshes.
+  const { scale, centerOffset, bbSize, bbTopY } = useMemo(() => {
+    const box = new THREE.Box3().setFromObject(clone);
+    if (box.isEmpty()) {
+      return { scale: 1, centerOffset: [0, 0, 0], bbSize: null, bbTopY: 0 };
     }
-
-    if (!mergedGeo.attributes.normal) mergedGeo.computeVertexNormals();
-    mergedGeo.computeBoundingBox();
-    const bb = mergedGeo.boundingBox;
     const size = new THREE.Vector3();
-    bb.getSize(size);
+    box.getSize(size);
+    const center = new THREE.Vector3();
+    box.getCenter(center);
 
-    // Target overall display height — matches the procedural fallback envelope
-    // so camera framing in the popup stays consistent across teeth.
     const maxRoot = Math.max(...anatomy.roots.map((r) => r.length));
     const targetHeight = anatomy.crownH + maxRoot;
     const s = targetHeight / Math.max(size.y, 0.001);
 
-    const center = new THREE.Vector3();
-    bb.getCenter(center);
     return {
-      geometry: mergedGeo,
       scale: s,
       centerOffset: [-center.x * s, -center.y * s, -center.z * s],
       bbSize: [size.x * s, size.y * s, size.z * s],
-      bbTopY: (bb.max.y - center.y) * s,
+      bbTopY: (box.max.y - center.y) * s,
     };
-  }, [obj, anatomy]);
-
-  if (!geometry) return null;
+  }, [clone, anatomy]);
 
   // Phase-based crown tinting — multiplied against the texture map. With an
   // opaque material this reads as "stained tooth" without weird overlay geometry.
@@ -280,28 +273,40 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
   // procedural anatomy. Tiny, occlusal-only, no protruding cone.
   const stainRadius = bbSize ? Math.min(bbSize[0], bbSize[2]) * 0.32 * phaseData.caries : 0;
 
+  // Build a single phase-aware material and apply it to every mesh inside
+  // the cloned OBJ tree. Re-runs whenever the phase data or texture changes.
+  useEffect(() => {
+    const useTexture = !phaseData.crownCap && diffuseMap;
+    const material = new THREE.MeshPhysicalMaterial({
+      map: useTexture ? diffuseMap : null,
+      color: new THREE.Color(surfaceColor),
+      roughness: phaseData.crownCap ? 0.18 : 0.45,
+      clearcoat: phaseData.crownCap ? 0.9 : 0.2,
+      clearcoatRoughness: phaseData.crownCap ? 0.08 : 0.45,
+      metalness: 0,
+      emissive: new THREE.Color(emissiveColor),
+      emissiveIntensity,
+    });
+    clone.traverse((child) => {
+      if (child.isMesh) {
+        child.material = material;
+        child.castShadow = true;
+        child.receiveShadow = true;
+        if (!child.geometry.attributes.normal) child.geometry.computeVertexNormals();
+      }
+    });
+    return () => material.dispose();
+  }, [clone, diffuseMap, surfaceColor, emissiveColor, emissiveIntensity, phaseData.crownCap]);
+
   return (
     <group>
-      {/* The REAL tooth — loaded from OBJ, scaled and centered on origin.
+      {/* The REAL tooth — full OBJ tree, scaled and centered on origin.
           Mirror right-side teeth so the cusp asymmetry reads correctly. */}
       <group
         scale={[fileInfo.mirror ? -scale : scale, scale, scale]}
         position={centerOffset}
       >
-        <mesh geometry={geometry} castShadow receiveShadow>
-          <meshPhysicalMaterial
-            // Crown-cap (post-restoration) hides the natural-tooth texture so
-            // the whole tooth reads as uniform ceramic, not a tinted molar.
-            map={phaseData.crownCap ? null : (diffuseMap || null)}
-            color={surfaceColor}
-            roughness={phaseData.crownCap ? 0.18 : 0.45}
-            clearcoat={phaseData.crownCap ? 0.9 : 0.2}
-            clearcoatRoughness={phaseData.crownCap ? 0.08 : 0.45}
-            metalness={0}
-            emissive={emissiveColor}
-            emissiveIntensity={emissiveIntensity}
-          />
-        </mesh>
+        <primitive object={clone} />
       </group>
 
       {/* Cavity surface stain — small dark blot on the occlusal surface,
