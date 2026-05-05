@@ -1,4 +1,5 @@
 import { useRef, useState, useEffect, useMemo, Suspense } from 'react';
+import { createPortal } from 'react-dom';
 import { Canvas, useThree, useLoader, useFrame as useFrameImpl } from '@react-three/fiber';
 import { OrbitControls, Environment, Html, Center, Line } from '@react-three/drei';
 import * as THREE from 'three';
@@ -167,14 +168,28 @@ export default function DentalViewer({ scanUrl, scanFormat, simulation, activeSt
       {/* Progression popup — always visible when any pathology/treatment is set,
           pinned to the top-right of the viewer so it doesn't depend on
           clicking the right tooth on an unsegmented scan. */}
-      {showPopup && (
-        <div style={{ position: 'absolute', top: 16, left: 16, zIndex: 100 }}>
+      {showPopup && createPortal(
+        <div
+          onClick={(e) => { if (e.target === e.currentTarget) setPopupHidden(true); }}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 2147483647,
+            background: 'rgba(2,2,6,0.94)',
+            backdropFilter: 'blur(8px)',
+            WebkitBackdropFilter: 'blur(8px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
           <ToothProgressionPopup
             tooth={effectiveTooth}
             pathology={effectivePathology}
             onClose={() => setPopupHidden(true)}
           />
-        </div>
+        </div>,
+        document.body
       )}
 
       {/* Show-progression chip when popup is dismissed */}

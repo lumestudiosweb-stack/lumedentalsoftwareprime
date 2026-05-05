@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, Suspense } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback, Suspense } from 'react';
 import { Canvas, useFrame, useLoader } from '@react-three/fiber';
 import { OrbitControls, Html } from '@react-three/drei';
 import * as THREE from 'three';
@@ -182,8 +182,14 @@ function getToothFileInfo(fdi) {
    bounding box to a known size, and overlays the disease/treatment
    internal anatomy (canals, pulp, lesions, gutta, files) inside it.
 ─────────────────────────────────────────────────────────────────────── */
-function RealToothModel({ fileInfo, anatomy, phaseData }) {
+function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
   const obj = useLoader(OBJLoader, fileInfo.url);
+
+  // Tell the popup the OBJ is ready — autoplay should only start once the
+  // tooth is actually visible.
+  useEffect(() => {
+    if (obj && onReady) onReady();
+  }, [obj, onReady]);
 
   // Diffuse map — loaded NON-BLOCKING via useState + TextureLoader.load()
   // (NOT useLoader, which would suspend the whole component if the texture
@@ -532,18 +538,28 @@ export default function ToothProgressionPopup({ tooth, pathology, onClose }) {
   const anatomy = useMemo(() => getToothAnatomy(tooth), [tooth]);
   const fileInfo = useMemo(() => getToothFileInfo(tooth), [tooth]);
   const [phaseIdx, setPhaseIdx] = useState(0);
-  const [playing, setPlaying] = useState(true);
+  const [playing, setPlaying] = useState(false);
+  const [toothReady, setToothReady] = useState(false);
+  const handleToothReady = useCallback(() => setToothReady(true), []);
 
-  // Start animation at the phase matching the input depth
+  // Reset the ready/playing/phase state whenever the popup re-targets.
   useEffect(() => {
+    setToothReady(false);
+    setPlaying(false);
     const startMap = {
       incipient: 1, enamel: 1,
       dentin: 2, deep_dentin: 3,
       pulp_exposure: 4,
     };
     setPhaseIdx(startMap[pathology?.depth] ?? 0);
-    setPlaying(true);
   }, [pathology?.depth, pathology?.kind, tooth]);
+
+  // Once the tooth OBJ has loaded, kick off the auto-play. For the
+  // procedural fallback (no fileInfo), there's no async load — start
+  // immediately so the popup isn't permanently paused.
+  useEffect(() => {
+    if (toothReady || !fileInfo) setPlaying(true);
+  }, [toothReady, fileInfo]);
 
   // Auto-advance phases, stop at the last one
   useEffect(() => {
@@ -632,20 +648,25 @@ export default function ToothProgressionPopup({ tooth, pathology, onClose }) {
         </button>
       </div>
 
-      {/* 3D simulation — static (no auto-spin). User can drag to rotate. */}
-      <div style={{ height: 280, background: '#0a0a12' }}>
+      {/* 3D simulation — static. No auto-spin, no manual rotate, no zoom.
+          Camera is locked so the tooth stays in one place at all times. */}
+      <div style={{ height: 320, background: '#0a0a12' }}>
         <Canvas camera={{ position: [0, 4, 28], fov: 32 }}>
           <ambientLight intensity={0.6} />
           <directionalLight position={[6, 12, 8]} intensity={1.3} />
           <directionalLight position={[-6, 6, -5]} intensity={0.4} color="#cce0ff" />
           <Suspense fallback={<ToothLoadingFallback />}>
             {fileInfo ? (
-              <RealToothModel fileInfo={fileInfo} anatomy={anatomy} phaseData={phaseData} />
+              <RealToothModel
+                fileInfo={fileInfo}
+                anatomy={anatomy}
+                phaseData={phaseData}
+                onReady={handleToothReady}
+              />
             ) : (
               <ToothModel anatomy={anatomy} phaseData={phaseData} />
             )}
           </Suspense>
-          <OrbitControls enableZoom enablePan={false} minDistance={16} maxDistance={48} maxPolarAngle={Math.PI * 0.9} />
         </Canvas>
       </div>
 
