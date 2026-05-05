@@ -169,20 +169,7 @@ export default function DentalViewer({ scanUrl, scanFormat, simulation, activeSt
           pinned to the top-right of the viewer so it doesn't depend on
           clicking the right tooth on an unsegmented scan. */}
       {showPopup && createPortal(
-        <div
-          onClick={(e) => { if (e.target === e.currentTarget) setPopupHidden(true); }}
-          style={{
-            position: 'fixed',
-            inset: 0,
-            zIndex: 2147483647,
-            background: 'rgba(2,2,6,0.94)',
-            backdropFilter: 'blur(8px)',
-            WebkitBackdropFilter: 'blur(8px)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
-        >
+        <div style={{ position: 'fixed', top: 80, left: 80, zIndex: 2147483647 }}>
           <ToothProgressionPopup
             tooth={effectiveTooth}
             pathology={effectivePathology}

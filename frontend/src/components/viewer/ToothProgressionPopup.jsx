@@ -259,13 +259,14 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
 
   // Phase-based crown tinting — multiplied against the texture map. With an
   // opaque material this reads as "stained tooth" without weird overlay geometry.
-  // Healthy = white (#fff = no tint, full texture color); disease = brown shift.
+  // Healthy = white (#fff = no tint, full texture color); disease shifts toward
+  // tan/brown but stays bright enough to read against the dark popup background.
   let surfaceColor;
   if (phaseData.crownCap) surfaceColor = '#f5ecd8';                // ceramic crown
-  else if (phaseData.caries > 0.85) surfaceColor = '#5a3a20';      // pulp/abscess — heavy brown shift
-  else if (phaseData.caries > 0.6)  surfaceColor = '#9a7a48';      // deep dentin — brown
-  else if (phaseData.caries > 0.3)  surfaceColor = '#d6b888';      // dentin — tan
-  else if (phaseData.caries > 0.05) surfaceColor = '#f0e0c0';      // enamel — slight cream
+  else if (phaseData.caries > 0.85) surfaceColor = '#b08858';      // pulp/abscess — brown but visible
+  else if (phaseData.caries > 0.6)  surfaceColor = '#d4a878';      // deep dentin — medium brown
+  else if (phaseData.caries > 0.3)  surfaceColor = '#e8d0a0';      // dentin — tan
+  else if (phaseData.caries > 0.05) surfaceColor = '#f5e8c8';      // enamel — slight cream
   else                              surfaceColor = '#ffffff';      // healthy — full texture
 
   // Pulp inflammation glows softly through the tooth
@@ -649,12 +650,15 @@ export default function ToothProgressionPopup({ tooth, pathology, onClose }) {
       </div>
 
       {/* 3D simulation — static. No auto-spin, no manual rotate, no zoom.
-          Camera is locked so the tooth stays in one place at all times. */}
-      <div style={{ height: 320, background: '#0a0a12' }}>
+          Camera is locked so the tooth stays in one place at all times.
+          Background and lighting are bright enough that even heavily-stained
+          (deep caries / pulpitis) teeth still read clearly. */}
+      <div style={{ height: 280, background: '#1c1c28' }}>
         <Canvas camera={{ position: [0, 4, 28], fov: 32 }}>
-          <ambientLight intensity={0.6} />
-          <directionalLight position={[6, 12, 8]} intensity={1.3} />
-          <directionalLight position={[-6, 6, -5]} intensity={0.4} color="#cce0ff" />
+          <ambientLight intensity={1.1} />
+          <directionalLight position={[6, 12, 8]} intensity={1.6} />
+          <directionalLight position={[-6, 6, -5]} intensity={0.7} color="#cce0ff" />
+          <directionalLight position={[0, -8, 10]} intensity={0.4} color="#ffd9b5" />
           <Suspense fallback={<ToothLoadingFallback />}>
             {fileInfo ? (
               <RealToothModel
