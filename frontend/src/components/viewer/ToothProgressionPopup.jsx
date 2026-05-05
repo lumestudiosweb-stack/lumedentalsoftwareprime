@@ -1,7 +1,8 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
-import { Canvas, useFrame } from '@react-three/fiber';
-import { OrbitControls } from '@react-three/drei';
+import { useState, useEffect, useMemo, useRef, Suspense } from 'react';
+import { Canvas, useFrame, useLoader } from '@react-three/fiber';
+import { OrbitControls, Html } from '@react-three/drei';
 import * as THREE from 'three';
+import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 
 /* ──────────────────────────────────────────────────────────────────────
    ToothProgressionPopup — 3D simulation that pops next to a tooth and
@@ -119,6 +120,223 @@ function phaseDataForId(id) {
     crown:          { caries: 0,    cariesDepth: 0,    pulpColor: '#dd7a40', pulpEmissive: 0,    canalState: 'gutta',   apicalLesion: 0.05,accessHole: false, fileDepth: 0,   gutta: 1, crownCap: true  },
   };
   return all[id] || all.healthy;
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+   FDI → real OBJ tooth model mapping (anatomical library in public/teeth)
+   The library has 1 model per tooth TYPE; we mirror via scale.x = -1
+   for the right side of each arch.
+─────────────────────────────────────────────────────────────────────── */
+const TOOTH_FILES = {
+  upper: {
+    1: { folder: 'maxillary left central incisor',  obj: 'UL1sketch1_1.OBJ' },
+    2: { folder: 'maxillary lateral incisor',        obj: 'UL2sketch_1.OBJ'  },
+    3: { folder: 'maxillary canine',                 obj: 'UL3sketch1_1.OBJ' },
+    4: { folder: 'maxillary first premolar',         obj: 'UL4sketch_1.OBJ'  },
+    5: { folder: 'Maxillary Second Premolar',        obj: 'UL5sketch_1.OBJ'  },
+    6: { folder: 'maxillary first molar',            obj: 'UL6sketch_1.OBJ'  },
+    7: { folder: 'maxillary second molar',           obj: 'UL7sketch_1.OBJ'  },
+    8: { folder: 'maxillary third molar',            obj: 'UL8sketch_1.OBJ'  },
+  },
+  lower: {
+    1: { folder: 'mandibular left central incisor',  obj: 'LL1sketch_1.OBJ'  },
+    2: { folder: 'mandibular left lateral incisor',  obj: 'LL1sketch_1.OBJ'  },
+    3: { folder: 'mandibular left canine',           obj: 'LL3sketch_1.OBJ'  },
+    4: { folder: 'mandibular first premolar',        obj: 'UL4sketch_1.OBJ'  },
+    5: { folder: 'mandibular left second premolar',  obj: 'LL5sketch1_1.OBJ' },
+    6: { folder: 'mandibular first molar',           obj: 'LL6sketch_1.OBJ'  },
+    7: { folder: 'mandibular second molar',          obj: 'LL7sketch_1.OBJ'  },
+    8: { folder: 'mandibular third molar',           obj: 'LL8sketc_1.OBJ'   },
+  },
+};
+
+function getToothFileInfo(fdi) {
+  if (!fdi) return null;
+  const fdiStr = String(fdi);
+  const archDigit = fdiStr[0];
+  const pos = parseInt(fdiStr[1], 10);
+  if (!pos || pos < 1 || pos > 8) return null;
+  const arch = (archDigit === '1' || archDigit === '2') ? 'upper' : 'lower';
+  const isRight = (archDigit === '1' || archDigit === '4');
+  const entry = TOOTH_FILES[arch]?.[pos];
+  if (!entry) return null;
+  const url = `/teeth/${encodeURIComponent(entry.folder)}/${entry.obj}`;
+  return { url, mirror: isRight };
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+   RealToothModel — loads the actual OBJ tooth scan, normalizes its
+   bounding box to a known size, and overlays the disease/treatment
+   internal anatomy (canals, pulp, lesions, gutta, files) inside it.
+─────────────────────────────────────────────────────────────────────── */
+function RealToothModel({ fileInfo, anatomy, phaseData }) {
+  const obj = useLoader(OBJLoader, fileInfo.url);
+
+  // Normalize the loaded mesh into our coordinate system once
+  const { geometry, scale, centerOffset } = useMemo(() => {
+    let mergedGeo = null;
+    obj.traverse((child) => {
+      if (child.isMesh && !mergedGeo) {
+        mergedGeo = child.geometry.clone();
+      }
+    });
+    if (!mergedGeo) return { geometry: null, scale: 1, centerOffset: [0, 0, 0] };
+
+    if (!mergedGeo.attributes.normal) mergedGeo.computeVertexNormals();
+    mergedGeo.computeBoundingBox();
+    const bb = mergedGeo.boundingBox;
+    const size = new THREE.Vector3();
+    bb.getSize(size);
+
+    // Target height: crown + longest root (matches our procedural anatomy)
+    const maxRoot = Math.max(...anatomy.roots.map((r) => r.length));
+    const targetHeight = anatomy.crownH + maxRoot;
+    const s = targetHeight / Math.max(size.y, 0.001);
+
+    // Re-center on origin (so we control positioning ourselves)
+    const center = new THREE.Vector3();
+    bb.getCenter(center);
+    return {
+      geometry: mergedGeo,
+      scale: s,
+      centerOffset: [-center.x * s, -center.y * s, -center.z * s],
+    };
+  }, [obj, anatomy]);
+
+  if (!geometry) return null;
+
+  const maxRoot = Math.max(...anatomy.roots.map((r) => r.length));
+  const apexY = -maxRoot;
+  const crownTopY = anatomy.crownH;
+
+  // Tooth surface color shifts based on disease/treatment phase
+  const surfaceColor = phaseData.crownCap
+    ? '#f8f0e0'                                   // crown cap (ceramic)
+    : phaseData.caries > 0.5
+      ? phaseData.caries > 0.85 ? '#7a5230' : '#c4a878'   // dark/medium decay
+      : phaseData.caries > 0.2
+        ? '#e6d4a8'                               // early staining
+        : '#fff5e0';                              // healthy enamel
+
+  return (
+    <group position={[0, -(crownTopY + apexY) / 2, 0]}>
+      {/* Alveolar bone backdrop */}
+      <mesh position={[0, -maxRoot * 0.5, 0]}>
+        <boxGeometry args={[Math.max(anatomy.crownW * 2.6, 9), maxRoot, Math.max(anatomy.crownD * 2.6, 6)]} />
+        <meshStandardMaterial color="#e8d8b8" transparent opacity={0.18} roughness={0.95} depthWrite={false} />
+      </mesh>
+
+      {/* The REAL tooth — loaded from OBJ, scaled into place */}
+      <group
+        scale={[fileInfo.mirror ? -scale : scale, scale, scale]}
+        position={centerOffset}
+      >
+        <mesh geometry={geometry} castShadow receiveShadow>
+          <meshPhysicalMaterial
+            color={surfaceColor}
+            roughness={phaseData.crownCap ? 0.15 : 0.42}
+            clearcoat={phaseData.crownCap ? 1 : 0.25}
+            clearcoatRoughness={phaseData.crownCap ? 0.05 : 0.4}
+            transparent={!phaseData.crownCap}
+            opacity={phaseData.crownCap ? 1 : 0.75}
+            transmission={phaseData.crownCap ? 0 : 0.25}
+            ior={1.55}
+            thickness={0.5}
+            depthWrite={phaseData.crownCap}
+            emissive={phaseData.caries > 0.7 ? '#2a0a02' : '#000'}
+            emissiveIntensity={phaseData.caries > 0.7 ? 0.4 : 0}
+          />
+        </mesh>
+      </group>
+
+      {/* Pulp chamber — glows red when inflamed, visible through translucent enamel */}
+      {!phaseData.crownCap && (
+        <mesh position={[0, anatomy.crownH * 0.4, 0]}>
+          <boxGeometry args={[anatomy.crownW * 0.42, anatomy.crownH * 0.55, anatomy.crownD * 0.42]} />
+          <meshStandardMaterial
+            color={phaseData.pulpColor}
+            emissive={phaseData.pulpColor}
+            emissiveIntensity={phaseData.pulpEmissive}
+            transparent
+            opacity={phaseData.accessHole ? 0.4 : 0.85}
+            depthWrite={false}
+          />
+        </mesh>
+      )}
+
+      {/* Access opening — drilled black hole through occlusal surface */}
+      {phaseData.accessHole && (
+        <mesh position={[0, anatomy.crownH * 0.65, 0]}>
+          <cylinderGeometry args={[anatomy.crownW * 0.18, anatomy.crownW * 0.16, anatomy.crownH * 0.9, 24]} />
+          <meshStandardMaterial color="#000" />
+        </mesh>
+      )}
+
+      {/* Per-root: canal + lesion + endo file + gutta cone */}
+      {anatomy.roots.map((r, i) => {
+        const rootCenterY = -r.length * 0.5;
+        const apex = -r.length;
+        return (
+          <group key={`root-${i}`}>
+            {/* Root canal — colored cylinder running through root */}
+            <mesh position={[r.x, rootCenterY, r.z || 0]}>
+              <cylinderGeometry args={[r.topR * 0.22, r.bottomR * 0.55, r.length * 0.97, 14]} />
+              <meshStandardMaterial
+                color={canalColor(phaseData.canalState)}
+                emissive={phaseData.canalState === 'infected' ? '#3a0000' : '#000'}
+                emissiveIntensity={phaseData.canalState === 'infected' ? 0.4 : 0}
+                roughness={phaseData.canalState === 'gutta' ? 0.5 : 0.7}
+                transparent
+                opacity={0.85}
+                depthWrite={false}
+              />
+            </mesh>
+
+            {/* Periapical lesion at root tip */}
+            {phaseData.apicalLesion > 0.05 && (
+              <mesh position={[r.x, apex - 0.4, r.z || 0]}>
+                <sphereGeometry args={[0.55 + phaseData.apicalLesion * 0.7, 16, 12]} />
+                <meshStandardMaterial
+                  color={phaseData.apicalLesion > 0.6 ? '#5a1a08' : '#7a3a18'}
+                  emissive="#3a0c04"
+                  emissiveIntensity={phaseData.apicalLesion * 0.3}
+                  transparent
+                  opacity={0.85}
+                  depthWrite={false}
+                />
+              </mesh>
+            )}
+
+            {/* Endo file — silver instrument going down canal during shaping */}
+            {phaseData.fileDepth > 0 && (
+              <mesh position={[r.x, anatomy.crownH * 0.5 - r.length * phaseData.fileDepth * 0.5, r.z || 0]}>
+                <cylinderGeometry args={[0.08, 0.04, anatomy.crownH + r.length * phaseData.fileDepth, 8]} />
+                <meshStandardMaterial color="#d8d8e0" metalness={0.85} roughness={0.18} />
+              </mesh>
+            )}
+
+            {/* Gutta-percha cone */}
+            {phaseData.gutta > 0 && (
+              <mesh position={[r.x, rootCenterY, r.z || 0]}>
+                <coneGeometry args={[r.topR * 0.2, r.length * 0.97, 14]} />
+                <meshStandardMaterial color="#c95818" roughness={0.6} />
+              </mesh>
+            )}
+          </group>
+        );
+      })}
+    </group>
+  );
+}
+
+function ToothLoadingFallback() {
+  return (
+    <Html center>
+      <div style={{ color: '#6b7280', fontSize: 11, fontFamily: 'system-ui', whiteSpace: 'nowrap' }}>
+        Loading 3D tooth model…
+      </div>
+    </Html>
+  );
 }
 
 function canalColor(state) {
@@ -309,6 +527,7 @@ function btnStyle(primary = false) {
 
 export default function ToothProgressionPopup({ tooth, pathology, onClose }) {
   const anatomy = useMemo(() => getToothAnatomy(tooth), [tooth]);
+  const fileInfo = useMemo(() => getToothFileInfo(tooth), [tooth]);
   const [phaseIdx, setPhaseIdx] = useState(0);
   const [playing, setPlaying] = useState(true);
 
@@ -418,7 +637,13 @@ export default function ToothProgressionPopup({ tooth, pathology, onClose }) {
           <directionalLight position={[-6, 6, -5]} intensity={0.45} color="#aaccff" />
           <pointLight position={[0, -10, 6]} intensity={0.4} color="#ff8866" />
           <SlowSpin>
-            <ToothModel anatomy={anatomy} phaseData={phaseData} />
+            <Suspense fallback={<ToothLoadingFallback />}>
+              {fileInfo ? (
+                <RealToothModel fileInfo={fileInfo} anatomy={anatomy} phaseData={phaseData} />
+              ) : (
+                <ToothModel anatomy={anatomy} phaseData={phaseData} />
+              )}
+            </Suspense>
           </SlowSpin>
           <OrbitControls enableZoom enablePan={false} minDistance={16} maxDistance={48} maxPolarAngle={Math.PI * 0.9} />
         </Canvas>

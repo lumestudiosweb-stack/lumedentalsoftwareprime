@@ -12,7 +12,16 @@ venv/
 .venv/
 *.stl
 *.obj
+*.OBJ
 *.ply
+
+# Tooth model library — allow OBJs (used by progression popup), block heavy textures
+!frontend/public/teeth/**/*.OBJ
+!frontend/public/teeth/**/*.obj
+frontend/public/teeth/**/*.png
+frontend/public/teeth/**/*.PNG
+frontend/public/teeth/**/*.jpg
+frontend/public/teeth/**/*.jpeg
 uploads/
 temp/
 *.log
