@@ -654,6 +654,25 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
     return { effectiveStage: 'restored', effectiveTreatment: kindToTreatment[kind] || 'composite_filling' };
   }, [clinicalPathology, simStage, simTreatment]);
 
+  // ── Decal kind: prefer the clinical-picker kind, otherwise derive a kind
+  //    from the simulation stage/treatment. This makes the cavity stain
+  //    appear when the user clicks during simulation playback even without
+  //    explicitly picking a clinical pathology. ──
+  const decalKind = useMemo(() => {
+    if (clinicalPathology?.kind) return clinicalPathology.kind;
+    const simTreatmentToKind = {
+      composite_filling: 'composite_filling', zirconia_crown: 'all_ceramic_crown',
+      rct_crown: 'all_ceramic_crown', metal_crown: 'metal_crown',
+      pfm_crown: 'pfm_crown', root_canal: 'rct',
+    };
+    if (simTreatment && simTreatmentToKind[simTreatment]) return simTreatmentToKind[simTreatment];
+    if (['enamel', 'dentin', 'deep_dentin', 'pulp', 'abscess'].includes(simStage)) return 'caries';
+    if (simStage === 'extracted') return 'extraction';
+    if (simStage === 'restored') return 'all_ceramic_crown';
+    if (simStage === 'endodontic') return 'rct';
+    return null;
+  }, [clinicalPathology, simStage, simTreatment]);
+
   const isPulsing = ['pulp', 'abscess'].includes(effectiveStage);
 
   // ── Click-to-place overlay ──
@@ -683,7 +702,7 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
   //    to find the actual occlusal surface point + normal. ──
   useEffect(() => {
     if (!scanMesh || !geometry || !pickedTooth || markerPos) return;
-    if (!clinicalPathology?.kind) return;
+    if (!decalKind) return;
 
     const fdi = String(pickedTooth);
     const archDigit = fdi[0];
@@ -735,7 +754,7 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
     if (!n) return;
     setMarkerPos([hit.point.x, hit.point.y, hit.point.z]);
     setMarkerNormal([n.x, n.y, n.z]);
-  }, [scanMesh, geometry, pickedTooth, clinicalPathology?.kind, clinicalPathology?.depth, markerPos]);
+  }, [scanMesh, geometry, pickedTooth, decalKind, markerPos]);
 
   // ── Texture imperatively applied ──
   useEffect(() => {
@@ -819,14 +838,16 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
       )}
 
       {/* Pathology decal — projected onto the actual scan surface so it
-          looks baked into the tooth, not glued on top. */}
-      {markerPos && markerNormal && scanMesh && clinicalPathology?.kind && (
+          looks baked into the tooth, not glued on top. Renders whenever a
+          marker is placed AND there's an effective disease/treatment to
+          show (clinical picker OR simulation timeline). */}
+      {markerPos && markerNormal && scanMesh && decalKind && (
         <PathologyDecal
           mesh={scanMesh}
           position={markerPos}
           normal={markerNormal}
           size={overlaySize * 1.6}
-          kind={clinicalPathology.kind}
+          kind={decalKind}
           stage={effectiveStage}
           treatment={effectiveTreatment}
           pulsing={isPulsing}
