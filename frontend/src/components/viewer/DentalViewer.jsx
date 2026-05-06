@@ -378,54 +378,77 @@ function makeStainTexture(kind, stage, treatment) {
     ctx.stroke();
   };
 
-  // ── CARIES — dark brown organic stain that LOOKS like decay in fissures
+  // ── CARIES — hyper-realistic black bacterial stain with branching crack
+  // lines radiating from a deep central pit. Looks like an actual cavity
+  // baked into the chewing surface, not a brown smudge.
   if (kind === 'caries') {
-    const palettes = {
-      enamel:      { core: 'rgba(110,75,30,0.85)', mid: 'rgba(135,90,45,0.7)',  edge: 'rgba(170,130,80,0.0)' },
-      dentin:      { core: 'rgba(35,15,4,0.96)',   mid: 'rgba(75,38,14,0.88)',  edge: 'rgba(120,70,30,0.0)' },
-      deep_dentin: { core: 'rgba(12,4,0,0.98)',    mid: 'rgba(45,18,4,0.92)',   edge: 'rgba(100,55,20,0.0)' },
-      pulp:        { core: 'rgba(0,0,0,1)',        mid: 'rgba(40,8,5,0.95)',    edge: 'rgba(95,35,15,0.0)' },
-      abscess:     { core: 'rgba(0,0,0,1)',        mid: 'rgba(80,15,5,0.95)',   edge: 'rgba(160,40,20,0.0)' },
+    // Stage controls how dark/aggressive the cavity reads. Even the lightest
+    // (enamel) stage uses near-black so the lesion is unmistakeable.
+    const sevByStage = {
+      enamel: 0.55, dentin: 0.78, deep_dentin: 0.92, pulp: 1.0, abscess: 1.0,
     };
-    const pal = palettes[stage] || palettes.dentin;
+    const sev = sevByStage[stage] ?? 0.78;
 
-    // Outer halo — soft brown shadow
-    const grad = ctx.createRadialGradient(cx, cy, 6, cx, cy, SIZE * 0.42);
-    grad.addColorStop(0,   pal.core);
-    grad.addColorStop(0.4, pal.mid);
-    grad.addColorStop(1,   pal.edge);
-    ctx.fillStyle = grad;
+    // Soft halo — bleed of decay outward from the pit
+    const halo = ctx.createRadialGradient(cx, cy, 6, cx, cy, SIZE * 0.46);
+    halo.addColorStop(0,    `rgba(15,5,0,${0.85 + sev * 0.15})`);
+    halo.addColorStop(0.35, `rgba(40,18,4,${0.7 + sev * 0.25})`);
+    halo.addColorStop(1,    'rgba(110,55,15,0)');
+    ctx.fillStyle = halo;
     ctx.fillRect(0, 0, SIZE, SIZE);
 
-    // Branching dark fissures — like decay tracking along grooves
-    const numFissures = stage === 'enamel' ? 4 : 7;
-    for (let i = 0; i < numFissures; i++) {
-      const angle = (i / numFissures) * Math.PI * 2 + Math.random() * 0.6;
-      const len = SIZE * (0.20 + Math.random() * 0.20);
-      const w = 9 + Math.random() * 14;
-      drawFissure(angle, len, w, pal.core);
-      // Inner darker streak inside the fissure
-      drawFissure(angle, len * 0.7, w * 0.45, pal.core);
+    // Branching black fissure cracks — multi-segment, with random sub-branches
+    const drawCrack = (angle, length, width) => {
+      ctx.strokeStyle = 'rgba(0,0,0,0.96)';
+      ctx.lineWidth = width;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      let x = cx, y = cy;
+      const steps = 18;
+      for (let s = 1; s <= steps; s++) {
+        const t = s / steps;
+        const r = length * t;
+        const a = angle + (Math.random() - 0.5) * 0.5;
+        const wobble = (Math.random() - 0.5) * 18 * (1 - t);
+        x = cx + Math.cos(a) * r + wobble;
+        y = cy + Math.sin(a) * r + wobble;
+        ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    };
+    const numCracks = 7 + Math.round(sev * 5);
+    for (let i = 0; i < numCracks; i++) {
+      const angle = (i / numCracks) * Math.PI * 2 + (Math.random() - 0.5) * 0.5;
+      const len = SIZE * (0.22 + sev * 0.22) * (0.7 + Math.random() * 0.6);
+      const w = 8 + Math.random() * (10 + sev * 8);
+      drawCrack(angle, len, w);
+      drawCrack(angle, len * 0.65, w * 0.45);                    // darker inner streak
+      if (Math.random() < 0.55) {
+        drawCrack(angle + (Math.random() - 0.5) * 0.7, len * 0.5, w * 0.5); // sub-branch
+      }
     }
 
-    // Re-darken the very center for depth
-    const grad2 = ctx.createRadialGradient(cx, cy, 0, cx, cy, SIZE * 0.18);
-    grad2.addColorStop(0, pal.core);
-    grad2.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.fillStyle = grad2;
+    // Deep central pit — the bottom of the cavity, pure black
+    const pit = ctx.createRadialGradient(cx, cy, 0, cx, cy, SIZE * 0.18);
+    pit.addColorStop(0, 'rgba(0,0,0,1)');
+    pit.addColorStop(0.6, 'rgba(8,3,0,0.92)');
+    pit.addColorStop(1, 'rgba(8,3,0,0)');
+    ctx.fillStyle = pit;
     ctx.fillRect(0, 0, SIZE, SIZE);
 
-    // Scattered specks of darker decay
-    ctx.fillStyle = pal.core;
-    for (let i = 0; i < 35; i++) {
-      const r = SIZE * 0.05 + Math.random() * SIZE * 0.32;
+    // Scattered black specks of bacterial decay
+    ctx.fillStyle = 'rgba(0,0,0,0.95)';
+    for (let i = 0; i < 55; i++) {
+      const r = SIZE * (0.05 + Math.random() * 0.34);
       const a = Math.random() * Math.PI * 2;
       ctx.beginPath();
       ctx.arc(cx + Math.cos(a) * r, cy + Math.sin(a) * r, 1 + Math.random() * 4, 0, Math.PI * 2);
       ctx.fill();
     }
 
-    // Pulp/abscess — angry red glow at the center
+    // Pulp/abscess — angry red glow at the center, visible through the pit
     if (stage === 'pulp' || stage === 'abscess') {
       const rg = ctx.createRadialGradient(cx, cy, 0, cx, cy, SIZE * 0.10);
       rg.addColorStop(0, 'rgba(220,30,20,0.9)');
@@ -731,7 +754,9 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
   if (!geometry || !bbox) return <LoadingIndicator />;
 
   const meshDiag = Math.sqrt(bbox.sizeX**2 + bbox.sizeY**2 + bbox.sizeZ**2);
-  const overlaySize = meshDiag * 0.032; // slightly larger for visibility
+  // Decal size — sized to roughly cover one tooth's occlusal surface so the
+  // black caries stain reads clearly on the scan, not as a tiny dot.
+  const overlaySize = meshDiag * 0.06;
 
   const monthLabel  = activeState?.label?.split('—')[0]?.trim() || '';
   const detailLabel = activeState?.label?.split('—')[1]?.trim() || activeState?.label || '';
