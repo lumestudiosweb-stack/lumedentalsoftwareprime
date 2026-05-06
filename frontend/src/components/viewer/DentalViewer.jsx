@@ -654,6 +654,66 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
     }
   }, [clinicalPathology?.kind, clinicalPathology?.depth, pickedTooth]);
 
+  // ── Auto-place a cavity decal on the picked tooth without requiring a
+  //    user click. Uses an FDI → arch-position heuristic (parametric U-curve
+  //    over the scan's bounding box) and raycasts down onto the scan mesh
+  //    to find the actual occlusal surface point + normal. ──
+  useEffect(() => {
+    if (!scanMesh || !geometry || !pickedTooth || markerPos) return;
+    if (!clinicalPathology?.kind) return;
+
+    const fdi = String(pickedTooth);
+    const archDigit = fdi[0];
+    const pos = parseInt(fdi[1], 10);
+    if (!pos || pos < 1 || pos > 8) return;
+    const isUpper = archDigit === '1' || archDigit === '2';
+    // Patient-right (FDI 1, 4) sits on the viewer's left when looking at
+    // the patient straight on; patient-left (FDI 2, 3) on the viewer's right.
+    const sideSign = (archDigit === '1' || archDigit === '4') ? -1 : 1;
+
+    const bb = geometry.boundingBox;
+    if (!bb) return;
+    const sx = bb.max.x - bb.min.x;
+    const sy = bb.max.y - bb.min.y;
+    const sz = bb.max.z - bb.min.z;
+    const cx = (bb.max.x + bb.min.x) / 2;
+    const cz = (bb.max.z + bb.min.z) / 2;
+
+    // Parametric position along the arch: 0 = central incisor (front),
+    // 1 = third molar (back). Use a quarter-arc curve so the side offset
+    // grows with depth back into the mouth — matches the actual U-shape.
+    const t = (pos - 1) / 7;
+    const sideOffset = Math.sin(t * Math.PI * 0.5) * sx * 0.42 * sideSign;
+    const depthOffset = -Math.cos(t * Math.PI * 0.5) * sz * 0.42; // front = +z, back = -z
+
+    // Ray origin: above (or below for upper-arch-flipped scans) the target
+    // tooth position. We ray BOTH directions and take whichever hits first
+    // — handles scans uploaded with either orientation.
+    const targetX = cx + sideOffset;
+    const targetZ = cz + depthOffset;
+    const rayOriginAbove = new THREE.Vector3(targetX, bb.max.y + sy, targetZ);
+    const rayOriginBelow = new THREE.Vector3(targetX, bb.min.y - sy, targetZ);
+
+    const raycaster = new THREE.Raycaster();
+    raycaster.firstHitOnly = true;
+
+    // Try downward first
+    raycaster.set(rayOriginAbove, new THREE.Vector3(0, -1, 0));
+    let hits = raycaster.intersectObject(scanMesh, false);
+    if (!hits.length) {
+      // Try upward (in case scan is flipped)
+      raycaster.set(rayOriginBelow, new THREE.Vector3(0, 1, 0));
+      hits = raycaster.intersectObject(scanMesh, false);
+    }
+    if (!hits.length) return;
+
+    const hit = hits[0];
+    const n = hit.face?.normal.clone().transformDirection(scanMesh.matrixWorld).normalize();
+    if (!n) return;
+    setMarkerPos([hit.point.x, hit.point.y, hit.point.z]);
+    setMarkerNormal([n.x, n.y, n.z]);
+  }, [scanMesh, geometry, pickedTooth, clinicalPathology?.kind, clinicalPathology?.depth, markerPos]);
+
   // ── Texture imperatively applied ──
   useEffect(() => {
     if (!meshRef.current) return;

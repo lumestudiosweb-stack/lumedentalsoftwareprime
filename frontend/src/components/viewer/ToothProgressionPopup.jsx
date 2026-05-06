@@ -273,7 +273,17 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
 
   // Cavity surface stain — sits ON the OBJ's actual top vertex, NOT on
   // procedural anatomy. Tiny, occlusal-only, no protruding cone.
-  const stainRadius = bbSize ? Math.min(bbSize[0], bbSize[2]) * 0.32 * phaseData.caries : 0;
+  const stainRadius = bbSize ? Math.min(bbSize[0], bbSize[2]) * 0.42 * phaseData.caries : 0;
+
+  // Severity bucket for the canvas-textured cavity stain. Re-bake the
+  // texture only when the bucket changes (avoids hammering the canvas API
+  // every frame as caries level animates).
+  const sevBucket = Math.round(phaseData.caries * 4);
+  const cariesTexture = useMemo(
+    () => (sevBucket > 0 ? makeCariesTexture(sevBucket / 4) : null),
+    [sevBucket]
+  );
+  useEffect(() => () => { cariesTexture && cariesTexture.dispose(); }, [cariesTexture]);
 
   // Build a single phase-aware material and apply it to every mesh inside
   // the cloned OBJ tree. Re-runs whenever the phase data or texture changes.
@@ -307,19 +317,21 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
           it without any further parent-group adjustments. */}
       <primitive object={clone} />
 
-      {/* Cavity surface stain — small dark blot on the occlusal surface,
-          sized in real OBJ space so it never sticks out beyond the silhouette */}
-      {phaseData.caries > 0.15 && !phaseData.crownCap && bbSize && (
+      {/* Hyper-realistic cavity stain — canvas-textured plane with branching
+          black fissure cracks + scattered specks + dark central pit, sitting
+          flush on the OBJ's actual occlusal vertex. */}
+      {phaseData.caries > 0.15 && !phaseData.crownCap && bbSize && cariesTexture && (
         <mesh position={[0, bbTopY + 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={3}>
-          <circleGeometry args={[stainRadius, 32]} />
+          <planeGeometry args={[stainRadius * 2.2, stainRadius * 2.2]} />
           <meshStandardMaterial
-            color="#1a0a04"
+            map={cariesTexture}
             transparent
-            opacity={Math.min(0.92, 0.55 + phaseData.caries * 0.5)}
+            opacity={Math.min(0.96, 0.6 + phaseData.caries * 0.5)}
             side={THREE.DoubleSide}
             depthWrite={false}
             polygonOffset
             polygonOffsetFactor={-2}
+            roughness={0.95}
           />
         </mesh>
       )}
@@ -340,6 +352,90 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
       )}
     </group>
   );
+}
+
+/* Hyper-realistic caries stain: dark central pit with branching black
+   fissure cracks radiating outward, plus scattered specks of darker decay.
+   Rendered to a CanvasTexture so we can map it onto a circular plane on
+   the occlusal surface — much more convincing than a solid dark disc. */
+function makeCariesTexture(severity) {
+  const SIZE = 512;
+  const canvas = document.createElement('canvas');
+  canvas.width = SIZE;
+  canvas.height = SIZE;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, SIZE, SIZE);
+  const cx = SIZE / 2, cy = SIZE / 2;
+
+  // Severity ramps how dark/large the cavity reads. Capped to 1.
+  const sev = Math.min(1, Math.max(0, severity));
+  const coreA = Math.min(1, 0.78 + sev * 0.22);
+  const midA  = Math.min(1, 0.55 + sev * 0.4);
+  const haloR = SIZE * (0.32 + sev * 0.18);
+
+  // Soft brown halo — bleed of decay around the lesion
+  const halo = ctx.createRadialGradient(cx, cy, 6, cx, cy, haloR);
+  halo.addColorStop(0,   `rgba(40,18,4,${coreA})`);
+  halo.addColorStop(0.45,`rgba(75,38,14,${midA})`);
+  halo.addColorStop(1,   'rgba(120,70,30,0)');
+  ctx.fillStyle = halo;
+  ctx.fillRect(0, 0, SIZE, SIZE);
+
+  // Branching black fissure cracks
+  const drawFissure = (angle, length, width) => {
+    ctx.strokeStyle = `rgba(8,4,0,${0.92})`;
+    ctx.lineWidth = width;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    let x = cx, y = cy;
+    const steps = 16;
+    for (let s = 1; s <= steps; s++) {
+      const t = s / steps;
+      const r = length * t;
+      const a = angle + (Math.random() - 0.5) * 0.55;
+      const wobble = (Math.random() - 0.5) * 18 * (1 - t);
+      x = cx + Math.cos(a) * r + wobble;
+      y = cy + Math.sin(a) * r + wobble;
+      ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  };
+  const numFissures = 6 + Math.round(sev * 4);
+  for (let i = 0; i < numFissures; i++) {
+    const angle = (i / numFissures) * Math.PI * 2 + (Math.random() - 0.5) * 0.5;
+    const len = SIZE * (0.18 + sev * 0.22) * (0.7 + Math.random() * 0.6);
+    const w = 7 + Math.random() * (8 + sev * 8);
+    drawFissure(angle, len, w);
+    drawFissure(angle, len * 0.7, w * 0.45);                 // inner darker streak
+    if (Math.random() < 0.55) {
+      drawFissure(angle + (Math.random() - 0.5) * 0.7, len * 0.45, w * 0.5); // branch
+    }
+  }
+
+  // Re-darken the very center for depth (the pit at the bottom of the cavity)
+  const pit = ctx.createRadialGradient(cx, cy, 0, cx, cy, SIZE * 0.16);
+  pit.addColorStop(0, 'rgba(0,0,0,1)');
+  pit.addColorStop(0.6, 'rgba(15,5,2,0.85)');
+  pit.addColorStop(1, 'rgba(15,5,2,0)');
+  ctx.fillStyle = pit;
+  ctx.fillRect(0, 0, SIZE, SIZE);
+
+  // Scattered dark specks
+  ctx.fillStyle = 'rgba(8,2,0,0.95)';
+  for (let i = 0; i < 50; i++) {
+    const r = SIZE * (0.05 + Math.random() * 0.30);
+    const a = Math.random() * Math.PI * 2;
+    ctx.beginPath();
+    ctx.arc(cx + Math.cos(a) * r, cy + Math.sin(a) * r, 1 + Math.random() * 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+  return tex;
 }
 
 function ToothLoadingFallback() {
