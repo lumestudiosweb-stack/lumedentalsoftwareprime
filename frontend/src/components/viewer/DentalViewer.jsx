@@ -666,6 +666,16 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
     return { effectiveStage: 'restored', effectiveTreatment: kindToTreatment[kind] || 'composite_filling' };
   }, [clinicalPathology, simStage, simTreatment]);
 
+  // ── Click-to-place overlay state. Declared BEFORE decalKind so the
+  //    useMemo below can safely read clickPaintedKind (TDZ would crash the
+  //    page in the production-minified build otherwise). ──
+  const [markerPos, setMarkerPos] = useState(null);
+  const [markerNormal, setMarkerNormal] = useState(null);
+  // Set to 'caries' the first time the user clicks on a healthy scan with
+  // no disease/treatment context — so a click ALWAYS paints a visible
+  // cavity stain on the tooth they clicked, even on a healthy timeline.
+  const [clickPaintedKind, setClickPaintedKind] = useState(null);
+
   // ── Decal kind: prefer the clinical-picker kind, otherwise derive a kind
   //    from the simulation stage/treatment, otherwise fall back to a
   //    user-clicked "paint a caries" mode so any click on the scan still
@@ -687,14 +697,6 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
   }, [clinicalPathology, simStage, simTreatment, clickPaintedKind]);
 
   const isPulsing = ['pulp', 'abscess'].includes(effectiveStage);
-
-  // ── Click-to-place overlay ──
-  const [markerPos, setMarkerPos] = useState(null);
-  const [markerNormal, setMarkerNormal] = useState(null);
-  // Set to 'caries' the first time the user clicks on a healthy scan with
-  // no disease/treatment context — so a click ALWAYS paints a visible
-  // cavity stain on the tooth they clicked, even on a healthy timeline.
-  const [clickPaintedKind, setClickPaintedKind] = useState(null);
 
   const handleClickScan = (e) => {
     e.stopPropagation();
