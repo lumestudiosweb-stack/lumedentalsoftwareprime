@@ -655,9 +655,9 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
   }, [clinicalPathology, simStage, simTreatment]);
 
   // ── Decal kind: prefer the clinical-picker kind, otherwise derive a kind
-  //    from the simulation stage/treatment. This makes the cavity stain
-  //    appear when the user clicks during simulation playback even without
-  //    explicitly picking a clinical pathology. ──
+  //    from the simulation stage/treatment, otherwise fall back to a
+  //    user-clicked "paint a caries" mode so any click on the scan still
+  //    produces a visible cavity stain on the tooth. ──
   const decalKind = useMemo(() => {
     if (clinicalPathology?.kind) return clinicalPathology.kind;
     const simTreatmentToKind = {
@@ -670,14 +670,19 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
     if (simStage === 'extracted') return 'extraction';
     if (simStage === 'restored') return 'all_ceramic_crown';
     if (simStage === 'endodontic') return 'rct';
-    return null;
-  }, [clinicalPathology, simStage, simTreatment]);
+    // Healthy/initial timeline + no clinical pick: clicks paint a caries.
+    return clickPaintedKind;
+  }, [clinicalPathology, simStage, simTreatment, clickPaintedKind]);
 
   const isPulsing = ['pulp', 'abscess'].includes(effectiveStage);
 
   // ── Click-to-place overlay ──
   const [markerPos, setMarkerPos] = useState(null);
   const [markerNormal, setMarkerNormal] = useState(null);
+  // Set to 'caries' the first time the user clicks on a healthy scan with
+  // no disease/treatment context — so a click ALWAYS paints a visible
+  // cavity stain on the tooth they clicked, even on a healthy timeline.
+  const [clickPaintedKind, setClickPaintedKind] = useState(null);
 
   const handleClickScan = (e) => {
     e.stopPropagation();
@@ -685,6 +690,7 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
       setMarkerPos([e.point.x, e.point.y, e.point.z]);
       const n = e.face.normal.clone().transformDirection(meshRef.current.matrixWorld).normalize();
       setMarkerNormal([n.x, n.y, n.z]);
+      setClickPaintedKind('caries');
     }
   };
 
@@ -848,7 +854,10 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
           normal={markerNormal}
           size={overlaySize * 1.6}
           kind={decalKind}
-          stage={effectiveStage}
+          // Click-painted caries on a healthy timeline has no derived stage —
+          // default to a moderate dentin lesion so the decal still reads as
+          // a real cavity (deep black pit + branching cracks).
+          stage={effectiveStage || (decalKind === 'caries' ? 'dentin' : null)}
           treatment={effectiveTreatment}
           pulsing={isPulsing}
         />
