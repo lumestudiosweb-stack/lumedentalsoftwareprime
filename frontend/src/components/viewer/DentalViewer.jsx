@@ -617,17 +617,29 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
 
   // ── Load color texture ──────────────────────────────────────
   useEffect(() => {
-    if (!textureUrl) { setTexture(null); return; }
-    new THREE.TextureLoader().load(textureUrl, (tex) => {
-      tex.colorSpace = THREE.SRGBColorSpace;
-      tex.flipY = true; // PLY UV coords use OpenGL convention — keep flipY=true
-      tex.wrapS = THREE.ClampToEdgeWrapping;
-      tex.wrapT = THREE.ClampToEdgeWrapping;
-      tex.minFilter = THREE.LinearMipmapLinearFilter;
-      tex.generateMipmaps = true;
-      tex.anisotropy = 8;
-      setTexture(tex);
-    });
+    if (!textureUrl) { setTexture(null); return undefined; }
+    let cancelled = false;
+    new THREE.TextureLoader().load(
+      textureUrl,
+      (tex) => {
+        if (cancelled) { tex.dispose(); return; }
+        try {
+          tex.colorSpace = THREE.SRGBColorSpace;
+          tex.flipY = true; // PLY UV coords use OpenGL convention — keep flipY=true
+          tex.wrapS = THREE.ClampToEdgeWrapping;
+          tex.wrapT = THREE.ClampToEdgeWrapping;
+          tex.minFilter = THREE.LinearMipmapLinearFilter;
+          tex.generateMipmaps = true;
+          tex.anisotropy = 8;
+          setTexture(tex);
+        } catch (err) {
+          console.warn('[DentalViewer] texture init failed:', err);
+        }
+      },
+      undefined,
+      (err) => { console.warn('[DentalViewer] texture load failed:', err); }
+    );
+    return () => { cancelled = true; };
   }, [textureUrl]);
 
   const activeState = simulation?.states?.[activeStateIndex] || null;
@@ -686,11 +698,14 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
 
   const handleClickScan = (e) => {
     e.stopPropagation();
-    if (e.face && e.point) {
+    if (!e.face || !e.point || !meshRef.current) return;
+    try {
       setMarkerPos([e.point.x, e.point.y, e.point.z]);
       const n = e.face.normal.clone().transformDirection(meshRef.current.matrixWorld).normalize();
       setMarkerNormal([n.x, n.y, n.z]);
       setClickPaintedKind('caries');
+    } catch (err) {
+      console.warn('[DentalViewer] click-place failed:', err);
     }
   };
 
@@ -705,61 +720,59 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
   // ── Auto-place a cavity decal on the picked tooth without requiring a
   //    user click. Uses an FDI → arch-position heuristic (parametric U-curve
   //    over the scan's bounding box) and raycasts down onto the scan mesh
-  //    to find the actual occlusal surface point + normal. ──
+  //    to find the actual occlusal surface point + normal.
+  //    Wrapped in try/catch so a raycast failure can never blank the page. ──
   useEffect(() => {
-    if (!scanMesh || !geometry || !pickedTooth || markerPos) return;
-    if (!decalKind) return;
+    try {
+      if (!scanMesh || !geometry || !pickedTooth || markerPos) return;
+      if (!decalKind) return;
 
-    const fdi = String(pickedTooth);
-    const archDigit = fdi[0];
-    const pos = parseInt(fdi[1], 10);
-    if (!pos || pos < 1 || pos > 8) return;
-    const isUpper = archDigit === '1' || archDigit === '2';
-    // Patient-right (FDI 1, 4) sits on the viewer's left when looking at
-    // the patient straight on; patient-left (FDI 2, 3) on the viewer's right.
-    const sideSign = (archDigit === '1' || archDigit === '4') ? -1 : 1;
+      const fdi = String(pickedTooth);
+      const archDigit = fdi[0];
+      const pos = parseInt(fdi[1], 10);
+      if (!pos || pos < 1 || pos > 8) return;
+      // Patient-right (FDI 1, 4) sits on the viewer's left when looking at
+      // the patient straight on; patient-left (FDI 2, 3) on the viewer's right.
+      const sideSign = (archDigit === '1' || archDigit === '4') ? -1 : 1;
 
-    const bb = geometry.boundingBox;
-    if (!bb) return;
-    const sx = bb.max.x - bb.min.x;
-    const sy = bb.max.y - bb.min.y;
-    const sz = bb.max.z - bb.min.z;
-    const cx = (bb.max.x + bb.min.x) / 2;
-    const cz = (bb.max.z + bb.min.z) / 2;
+      const bb = geometry.boundingBox;
+      if (!bb) return;
+      const sx = bb.max.x - bb.min.x;
+      const sy = bb.max.y - bb.min.y;
+      const sz = bb.max.z - bb.min.z;
+      const cx = (bb.max.x + bb.min.x) / 2;
+      const cz = (bb.max.z + bb.min.z) / 2;
 
-    // Parametric position along the arch: 0 = central incisor (front),
-    // 1 = third molar (back). Use a quarter-arc curve so the side offset
-    // grows with depth back into the mouth — matches the actual U-shape.
-    const t = (pos - 1) / 7;
-    const sideOffset = Math.sin(t * Math.PI * 0.5) * sx * 0.42 * sideSign;
-    const depthOffset = -Math.cos(t * Math.PI * 0.5) * sz * 0.42; // front = +z, back = -z
+      // Parametric position along the arch: 0 = central incisor (front),
+      // 1 = third molar (back). Use a quarter-arc curve so the side offset
+      // grows with depth back into the mouth — matches the actual U-shape.
+      const t = (pos - 1) / 7;
+      const sideOffset = Math.sin(t * Math.PI * 0.5) * sx * 0.42 * sideSign;
+      const depthOffset = -Math.cos(t * Math.PI * 0.5) * sz * 0.42;
 
-    // Ray origin: above (or below for upper-arch-flipped scans) the target
-    // tooth position. We ray BOTH directions and take whichever hits first
-    // — handles scans uploaded with either orientation.
-    const targetX = cx + sideOffset;
-    const targetZ = cz + depthOffset;
-    const rayOriginAbove = new THREE.Vector3(targetX, bb.max.y + sy, targetZ);
-    const rayOriginBelow = new THREE.Vector3(targetX, bb.min.y - sy, targetZ);
+      const targetX = cx + sideOffset;
+      const targetZ = cz + depthOffset;
+      const rayOriginAbove = new THREE.Vector3(targetX, bb.max.y + sy, targetZ);
+      const rayOriginBelow = new THREE.Vector3(targetX, bb.min.y - sy, targetZ);
 
-    const raycaster = new THREE.Raycaster();
-    raycaster.firstHitOnly = true;
+      const raycaster = new THREE.Raycaster();
 
-    // Try downward first
-    raycaster.set(rayOriginAbove, new THREE.Vector3(0, -1, 0));
-    let hits = raycaster.intersectObject(scanMesh, false);
-    if (!hits.length) {
-      // Try upward (in case scan is flipped)
-      raycaster.set(rayOriginBelow, new THREE.Vector3(0, 1, 0));
-      hits = raycaster.intersectObject(scanMesh, false);
+      raycaster.set(rayOriginAbove, new THREE.Vector3(0, -1, 0));
+      let hits = raycaster.intersectObject(scanMesh, false);
+      if (!hits.length) {
+        raycaster.set(rayOriginBelow, new THREE.Vector3(0, 1, 0));
+        hits = raycaster.intersectObject(scanMesh, false);
+      }
+      if (!hits.length) return;
+
+      const hit = hits[0];
+      const n = hit.face?.normal?.clone().transformDirection(scanMesh.matrixWorld).normalize();
+      if (!n) return;
+      setMarkerPos([hit.point.x, hit.point.y, hit.point.z]);
+      setMarkerNormal([n.x, n.y, n.z]);
+    } catch (err) {
+      console.warn('[DentalViewer] auto-decal placement failed:', err);
     }
-    if (!hits.length) return;
-
-    const hit = hits[0];
-    const n = hit.face?.normal.clone().transformDirection(scanMesh.matrixWorld).normalize();
-    if (!n) return;
-    setMarkerPos([hit.point.x, hit.point.y, hit.point.z]);
-    setMarkerNormal([n.x, n.y, n.z]);
   }, [scanMesh, geometry, pickedTooth, decalKind, markerPos]);
 
   // ── Texture imperatively applied ──
