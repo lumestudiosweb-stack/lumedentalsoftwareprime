@@ -3,6 +3,7 @@ import { Canvas, useFrame, useLoader } from '@react-three/fiber';
 import { OrbitControls, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
+import { DecalGeometry } from 'three/examples/jsm/geometries/DecalGeometry.js';
 
 /* ──────────────────────────────────────────────────────────────────────
    ToothProgressionPopup — 3D simulation that pops next to a tooth and
@@ -189,12 +190,12 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
   // the clone's transform. Doing it on the OBJECT instead of via parent
   // <group> wrappers eliminates any chance of transform-order issues and
   // keeps Box3 math consistent with what's actually rendered.
-  const { clone, bbSize, bbTopY } = useMemo(() => {
+  const { clone, decalTargetMesh, bbSize, bbTopY } = useMemo(() => {
     const c = obj.clone(true);
 
     const box = new THREE.Box3().setFromObject(c);
     if (box.isEmpty()) {
-      return { clone: c, bbSize: null, bbTopY: 0 };
+      return { clone: c, decalTargetMesh: null, bbSize: null, bbTopY: 0 };
     }
 
     const size = new THREE.Vector3();
@@ -212,8 +213,18 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
     c.position.set(-center.x * s * (fileInfo.mirror ? -1 : 1), -center.y * s, -center.z * s);
     c.updateMatrixWorld(true);
 
+    // Find the first mesh inside the cloned tree — DecalGeometry needs a
+    // single Mesh to project onto. Most Sketchfab teeth ship one mesh; if
+    // there are multiple, the first one (usually the crown) is what the
+    // user sees on the occlusal surface so it's the right target.
+    let target = null;
+    c.traverse((child) => {
+      if (!target && child.isMesh) target = child;
+    });
+
     return {
       clone: c,
+      decalTargetMesh: target,
       bbSize: [size.x * s, size.y * s, size.z * s],
       bbTopY: (box.max.y - center.y) * s,
     };
@@ -285,6 +296,49 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
   );
   useEffect(() => () => { cariesTexture && cariesTexture.dispose(); }, [cariesTexture]);
 
+  // Decal geometry — projects the cariesTexture onto the actual OBJ
+  // surface so the cavity wraps along the chewing surface instead of
+  // floating as a flat disc above it. This is what makes the stain stay
+  // visible (and curve correctly) when the user rotates the tooth.
+  const cariesDecalGeometry = useMemo(() => {
+    if (!decalTargetMesh || !bbSize || !cariesTexture) return null;
+    if (phaseData.caries < 0.15 || phaseData.crownCap) return null;
+    try {
+      // Project from straight above the tooth, looking straight down. The
+      // decal box is sized to roughly cover one occlusal surface, with
+      // depth large enough to wrap into any deep grooves.
+      const stainR = Math.min(bbSize[0], bbSize[2]) * 0.45 * phaseData.caries;
+      const projectorPos = new THREE.Vector3(0, bbTopY + 1, 0);
+      const lookTarget   = new THREE.Vector3(0, 0, 0);
+      const up           = new THREE.Vector3(0, 0, 1);
+      const m = new THREE.Matrix4().lookAt(projectorPos, lookTarget, up);
+      const orientation = new THREE.Euler().setFromRotationMatrix(m);
+      const decalSize = new THREE.Vector3(stainR * 2.4, stainR * 2.4, Math.max(bbSize[1] * 0.6, stainR * 2));
+      return new DecalGeometry(decalTargetMesh, projectorPos, orientation, decalSize);
+    } catch {
+      return null;
+    }
+  }, [decalTargetMesh, bbSize, bbTopY, cariesTexture, phaseData.caries, phaseData.crownCap]);
+  useEffect(() => () => { cariesDecalGeometry && cariesDecalGeometry.dispose(); }, [cariesDecalGeometry]);
+
+  // Same for the RCT access cavity — a smaller, perfectly black decal.
+  const accessDecalGeometry = useMemo(() => {
+    if (!decalTargetMesh || !bbSize || !phaseData.accessHole) return null;
+    try {
+      const r = Math.min(bbSize[0], bbSize[2]) * 0.18;
+      const projectorPos = new THREE.Vector3(0, bbTopY + 1, 0);
+      const lookTarget   = new THREE.Vector3(0, 0, 0);
+      const up           = new THREE.Vector3(0, 0, 1);
+      const m = new THREE.Matrix4().lookAt(projectorPos, lookTarget, up);
+      const orientation = new THREE.Euler().setFromRotationMatrix(m);
+      const decalSize = new THREE.Vector3(r * 2, r * 2, Math.max(bbSize[1] * 0.6, r * 2));
+      return new DecalGeometry(decalTargetMesh, projectorPos, orientation, decalSize);
+    } catch {
+      return null;
+    }
+  }, [decalTargetMesh, bbSize, bbTopY, phaseData.accessHole]);
+  useEffect(() => () => { accessDecalGeometry && accessDecalGeometry.dispose(); }, [accessDecalGeometry]);
+
   // Build a single phase-aware material and apply it to every mesh inside
   // the cloned OBJ tree. Re-runs whenever the phase data or texture changes.
   useEffect(() => {
@@ -317,36 +371,34 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
           it without any further parent-group adjustments. */}
       <primitive object={clone} />
 
-      {/* Hyper-realistic cavity stain — canvas-textured plane with branching
-          black fissure cracks + scattered specks + dark central pit, sitting
-          flush on the OBJ's actual occlusal vertex. */}
-      {phaseData.caries > 0.15 && !phaseData.crownCap && bbSize && cariesTexture && (
-        <mesh position={[0, bbTopY + 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={3}>
-          <planeGeometry args={[stainRadius * 2.2, stainRadius * 2.2]} />
+      {/* Hyper-realistic cavity stain — projected as a DECAL onto the actual
+          OBJ surface so the texture wraps along the chewing surface and
+          stays visible from any rotation angle. */}
+      {cariesDecalGeometry && cariesTexture && (
+        <mesh geometry={cariesDecalGeometry} renderOrder={3}>
           <meshStandardMaterial
             map={cariesTexture}
             transparent
-            opacity={Math.min(0.96, 0.6 + phaseData.caries * 0.5)}
-            side={THREE.DoubleSide}
+            opacity={Math.min(0.96, 0.65 + phaseData.caries * 0.4)}
             depthWrite={false}
             polygonOffset
-            polygonOffsetFactor={-2}
+            polygonOffsetFactor={-4}
+            polygonOffsetUnits={-4}
             roughness={0.95}
           />
         </mesh>
       )}
 
-      {/* Access cavity (RCT prep) — a small dark drilled-out spot on the
-          occlusal surface. Same surface-only logic, no protruding cylinder. */}
-      {phaseData.accessHole && bbSize && (
-        <mesh position={[0, bbTopY + 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={3}>
-          <circleGeometry args={[Math.min(bbSize[0], bbSize[2]) * 0.18, 32]} />
+      {/* Access cavity (RCT prep) — same decal-projection treatment, just
+          a uniform black hole drilled into the chewing surface. */}
+      {accessDecalGeometry && (
+        <mesh geometry={accessDecalGeometry} renderOrder={3}>
           <meshStandardMaterial
             color="#0a0a0a"
-            side={THREE.DoubleSide}
             depthWrite={false}
             polygonOffset
-            polygonOffsetFactor={-2}
+            polygonOffsetFactor={-4}
+            polygonOffsetUnits={-4}
           />
         </mesh>
       )}
@@ -748,12 +800,13 @@ export default function ToothProgressionPopup({ tooth, pathology, onClose }) {
         </button>
       </div>
 
-      {/* 3D simulation — static. OrbitControls is included only to anchor the
-          camera target on the tooth (without it the camera has no lookAt and
-          the tooth ends up off-frame). All user interactions are disabled, so
-          the tooth stays perfectly still: no spin, no drag-rotate, no zoom. */}
-      <div style={{ height: 280, background: '#1c1c28' }}>
-        <Canvas camera={{ position: [0, 4, 28], fov: 32 }}>
+      {/* 3D simulation — bigger canvas so the whole tooth fits comfortably.
+          User can drag to rotate AND scroll to zoom; pan stays disabled so
+          the tooth doesn't get pushed off-frame. Pulled the camera back a
+          bit and widened the FOV slightly so the full crown + root render
+          inside the canvas without clipping. */}
+      <div style={{ height: 380, background: '#1c1c28' }}>
+        <Canvas camera={{ position: [0, 4, 32], fov: 36 }}>
           <ambientLight intensity={1.1} />
           <directionalLight position={[6, 12, 8]} intensity={1.6} />
           <directionalLight position={[-6, 6, -5]} intensity={0.7} color="#cce0ff" />
@@ -770,15 +823,16 @@ export default function ToothProgressionPopup({ tooth, pathology, onClose }) {
               <ToothModel anatomy={anatomy} phaseData={phaseData} />
             )}
           </Suspense>
-          {/* User can drag to rotate the tooth and inspect it from any angle.
-              No auto-spin, and zoom/pan are disabled so framing stays stable. */}
           <OrbitControls
             target={[0, 0, 0]}
             enableRotate
-            enableZoom={false}
+            enableZoom
             enablePan={false}
             autoRotate={false}
             rotateSpeed={0.8}
+            zoomSpeed={0.7}
+            minDistance={18}
+            maxDistance={55}
             minPolarAngle={Math.PI * 0.05}
             maxPolarAngle={Math.PI * 0.95}
           />
