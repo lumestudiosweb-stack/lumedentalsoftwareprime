@@ -188,13 +188,13 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
   // Clone the OBJ tree (deep) and bake centering + scaling directly into
   // the clone's transform. Also detect which end of the bounding box is
   // the chewing surface (some Sketchfab teeth are modeled crown-up, some
-  // crown-down) so we can place the cavity on the right side later.
-  const { clone, bbSize, bbTopY, occlusalY } = useMemo(() => {
+  // crown-down) and pick a target mesh for raycast-based UV lookup.
+  const { clone, bbSize, bbTopY, occlusalY, targetMesh } = useMemo(() => {
     const c = obj.clone(true);
 
     const box = new THREE.Box3().setFromObject(c);
     if (box.isEmpty()) {
-      return { clone: c, bbSize: null, bbTopY: 0, occlusalY: 0 };
+      return { clone: c, bbSize: null, bbTopY: 0, occlusalY: 0, targetMesh: null };
     }
 
     const size = new THREE.Vector3();
@@ -231,6 +231,15 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
     c.position.set(-center.x * s * (fileInfo.mirror ? -1 : 1), -center.y * s, -center.z * s);
     c.updateMatrixWorld(true);
 
+    // Pick the largest mesh in the tree as the raycast / UV target. The
+    // crown is almost always the densest sub-mesh.
+    let bestMesh = null, bestVertCount = 0;
+    c.traverse((child) => {
+      if (!child.isMesh || !child.geometry?.attributes?.position) return;
+      const n = child.geometry.attributes.position.count;
+      if (n > bestVertCount) { bestMesh = child; bestVertCount = n; }
+    });
+
     const halfHeight = (size.y / 2) * s;
     return {
       clone: c,
@@ -239,6 +248,7 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
       // World-Y of the chewing surface after centering. + halfHeight if crown
       // is at the top of the OBJ, - halfHeight if it's at the bottom.
       occlusalY: crownAtTop ? halfHeight : -halfHeight,
+      targetMesh: bestMesh,
     };
   }, [obj, anatomy, fileInfo.mirror]);
 
@@ -308,18 +318,81 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
   );
   useEffect(() => () => { cariesTexture && cariesTexture.dispose(); }, [cariesTexture]);
 
-  // (Decal-based approach was unreliable across different OBJ topologies —
-  // some teeth ship the crown as a sub-mesh whose matrixWorld didn't pick
-  // up the clone's scale in time, so the decal landed off-tooth or got
-  // clipped. Switched to a simple 3D-bulge approach below that's
-  // guaranteed visible from any angle.)
+  // ── Cavity ETCHED INTO the tooth's actual diffuse texture ──
+  // Raycast from outside the chewing surface inward to find the UV
+  // coordinate at the cusp center. Then composite the cariesTexture
+  // into a clone of the diffuse map at that UV. The result becomes the
+  // tooth's actual surface texture — the cavity wraps the curvature
+  // exactly because it's part of the material, not a separate mesh.
+  const occlusalUV = useMemo(() => {
+    if (!targetMesh || !occlusalY) return null;
+    try {
+      const dir = Math.sign(occlusalY) || 1;
+      const rayOrigin = new THREE.Vector3(0, occlusalY + dir * 4, 0);
+      const rayDir = new THREE.Vector3(0, -dir, 0);
+      const raycaster = new THREE.Raycaster();
+      raycaster.set(rayOrigin, rayDir);
+      const hits = raycaster.intersectObject(targetMesh, false);
+      if (!hits.length || !hits[0].uv) return null;
+      return { x: hits[0].uv.x, y: hits[0].uv.y };
+    } catch {
+      return null;
+    }
+  }, [targetMesh, occlusalY]);
+
+  // Build the painted diffuse: original diffuse + cavity texture stamped
+  // at the occlusal UV. Re-bakes when severity bucket / diffuse / UV change.
+  const paintedDiffuse = useMemo(() => {
+    if (!diffuseMap?.image || !cariesTexture?.image) return null;
+    if (phaseData.crownCap || phaseData.caries < 0.15) return null;
+    try {
+      const img = diffuseMap.image;
+      const W = img.width || img.naturalWidth || 1024;
+      const H = img.height || img.naturalHeight || 1024;
+      const canvas = document.createElement('canvas');
+      canvas.width = W;
+      canvas.height = H;
+      const ctx = canvas.getContext('2d');
+
+      // Original tooth texture
+      ctx.drawImage(img, 0, 0, W, H);
+
+      // Stamp cavity at the occlusal UV (or center of the texture as a
+      // sane fallback if the raycast didn't return a UV — the chewing
+      // surface is usually unwrapped near the texture's center).
+      const cariesImg = cariesTexture.image;
+      const stampSize = Math.min(W, H) * 0.32 * Math.min(1, phaseData.caries);
+      const ux = occlusalUV ? occlusalUV.x : 0.5;
+      const uy = occlusalUV ? occlusalUV.y : 0.5;
+      const cx = ux * W;
+      const cy = (1 - uy) * H;
+      // Multiply blend so the cavity darkens the underlying enamel (looks
+      // etched into the tooth instead of pasted on top).
+      ctx.globalCompositeOperation = 'multiply';
+      ctx.drawImage(cariesImg, cx - stampSize / 2, cy - stampSize / 2, stampSize, stampSize);
+      ctx.globalCompositeOperation = 'source-over';
+
+      const tex = new THREE.CanvasTexture(canvas);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.flipY = diffuseMap.flipY;
+      tex.wrapS = diffuseMap.wrapS;
+      tex.wrapT = diffuseMap.wrapT;
+      tex.needsUpdate = true;
+      return tex;
+    } catch {
+      return null;
+    }
+  }, [diffuseMap, cariesTexture, occlusalUV, phaseData.crownCap, phaseData.caries]);
+  useEffect(() => () => { paintedDiffuse && paintedDiffuse.dispose(); }, [paintedDiffuse]);
 
   // Build a single phase-aware material and apply it to every mesh inside
-  // the cloned OBJ tree. Re-runs whenever the phase data or texture changes.
+  // the cloned OBJ tree. Uses the cavity-painted diffuse when available
+  // (so the cavity is etched into the tooth's surface), else the original.
   useEffect(() => {
-    const useTexture = !phaseData.crownCap && diffuseMap;
+    const useTexture = !phaseData.crownCap;
+    const mapTex = useTexture ? (paintedDiffuse || diffuseMap || null) : null;
     const material = new THREE.MeshPhysicalMaterial({
-      map: useTexture ? diffuseMap : null,
+      map: mapTex,
       color: new THREE.Color(surfaceColor),
       roughness: phaseData.crownCap ? 0.18 : 0.45,
       clearcoat: phaseData.crownCap ? 0.9 : 0.2,
@@ -337,7 +410,7 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
       }
     });
     return () => material.dispose();
-  }, [clone, diffuseMap, surfaceColor, emissiveColor, emissiveIntensity, phaseData.crownCap]);
+  }, [clone, diffuseMap, paintedDiffuse, surfaceColor, emissiveColor, emissiveIntensity, phaseData.crownCap]);
 
   return (
     <group>
@@ -346,57 +419,10 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
           it without any further parent-group adjustments. */}
       <primitive object={clone} />
 
-      {/* Cavity — a flat textured disc with the canvas-painted
-          black-bacteria + crack-lines pattern, sitting flush on the
-          actual chewing surface (auto-detected from vertex density,
-          so it lands on the crown end whether the OBJ was modeled
-          crown-up or crown-down). No 3D balls or holes — just lines. */}
-      {phaseData.caries > 0.15 && !phaseData.crownCap && bbSize && cariesTexture && (() => {
-        const dir = Math.sign(occlusalY) || 1;
-        return (
-          <mesh
-            position={[0, occlusalY * 0.96, 0]}
-            rotation={[dir > 0 ? -Math.PI / 2 : Math.PI / 2, 0, 0]}
-            renderOrder={3}
-          >
-            <circleGeometry args={[stainRadius * 1.4, 48]} />
-            <meshStandardMaterial
-              map={cariesTexture}
-              transparent
-              opacity={Math.min(0.97, 0.7 + phaseData.caries * 0.4)}
-              side={THREE.DoubleSide}
-              depthWrite={false}
-              polygonOffset
-              polygonOffsetFactor={-4}
-              polygonOffsetUnits={-4}
-              roughness={0.95}
-            />
-          </mesh>
-        );
-      })()}
-
-      {/* Access cavity (RCT prep) — small flat black disc on the chewing
-          surface, NOT a drilled cylinder. Same flat-stain treatment. */}
-      {phaseData.accessHole && bbSize && (() => {
-        const dir = Math.sign(occlusalY) || 1;
-        return (
-          <mesh
-            position={[0, occlusalY * 0.96, 0]}
-            rotation={[dir > 0 ? -Math.PI / 2 : Math.PI / 2, 0, 0]}
-            renderOrder={3}
-          >
-            <circleGeometry args={[bbSize[0] * 0.18, 32]} />
-            <meshStandardMaterial
-              color="#000"
-              side={THREE.DoubleSide}
-              depthWrite={false}
-              polygonOffset
-              polygonOffsetFactor={-4}
-              polygonOffsetUnits={-4}
-            />
-          </mesh>
-        );
-      })()}
+      {/* Cavity is etched directly into the tooth's diffuse texture above
+          (paintedDiffuse), so no separate mesh is rendered here — the
+          black bacteria + crack lines are part of the actual surface
+          color and follow the curvature exactly. */}
     </group>
   );
 }
