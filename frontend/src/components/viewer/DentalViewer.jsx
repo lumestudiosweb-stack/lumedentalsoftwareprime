@@ -169,13 +169,13 @@ export default function DentalViewer({ scanUrl, scanFormat, simulation, activeSt
           pinned to the top-right of the viewer so it doesn't depend on
           clicking the right tooth on an unsegmented scan. */}
       {showPopup && createPortal(
-        <div style={{ position: 'fixed', top: 80, left: 80, zIndex: 2147483647 }}>
+        <DraggablePopup>
           <ToothProgressionPopup
             tooth={effectiveTooth}
             pathology={effectivePathology}
             onClose={() => setPopupHidden(true)}
           />
-        </div>,
+        </DraggablePopup>,
         document.body
       )}
 
@@ -1403,5 +1403,63 @@ function LoadingIndicator() {
         Loading 3D scan...
       </div>
     </Html>
+  );
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+   DraggablePopup — wraps the progression popup in a draggable container.
+   Drag handle is a slim invisible bar overlaid on the popup header (the
+   element marked .progression-popup-drag-handle inside the child). The
+   popup can be moved anywhere on the viewport and stays where the user
+   drops it for the rest of the session.
+─────────────────────────────────────────────────────────────────────── */
+function DraggablePopup({ children }) {
+  const [pos, setPos] = useState({ x: 80, y: 80 });
+  const dragRef = useRef({ active: false, dx: 0, dy: 0 });
+
+  const onPointerDown = (e) => {
+    // Only drag from the header strip — let buttons / inner content handle clicks
+    if (e.target.closest?.('button, input, select, textarea, [contenteditable]')) return;
+    if (!e.target.closest?.('[data-popup-drag-handle="true"]')) return;
+    e.preventDefault();
+    dragRef.current = { active: true, dx: e.clientX - pos.x, dy: e.clientY - pos.y };
+    document.body.style.cursor = 'grabbing';
+  };
+  useEffect(() => {
+    const onMove = (e) => {
+      if (!dragRef.current.active) return;
+      const margin = 8;
+      const maxX = window.innerWidth - 200;   // leave at least 200px on screen
+      const maxY = window.innerHeight - 80;
+      setPos({
+        x: Math.max(margin, Math.min(maxX, e.clientX - dragRef.current.dx)),
+        y: Math.max(margin, Math.min(maxY, e.clientY - dragRef.current.dy)),
+      });
+    };
+    const onUp = () => {
+      if (!dragRef.current.active) return;
+      dragRef.current.active = false;
+      document.body.style.cursor = '';
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+  }, []);
+
+  return (
+    <div
+      onPointerDown={onPointerDown}
+      style={{
+        position: 'fixed',
+        top: pos.y,
+        left: pos.x,
+        zIndex: 2147483647,
+      }}
+    >
+      {children}
+    </div>
   );
 }

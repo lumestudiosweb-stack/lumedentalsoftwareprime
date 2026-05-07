@@ -339,6 +339,51 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
   }, [decalTargetMesh, bbSize, bbTopY, phaseData.accessHole]);
   useEffect(() => () => { accessDecalGeometry && accessDecalGeometry.dispose(); }, [accessDecalGeometry]);
 
+  // Attach the cavity decal as a Three.js child of the target mesh, so it
+  // inherits the same world transform (scale, mirror, position) and stays
+  // glued onto the chewing surface from any rotation angle. Rendering the
+  // decal as a sibling at world-identity makes it disappear because the
+  // decal positions are in the target mesh's LOCAL space.
+  useEffect(() => {
+    if (!decalTargetMesh || !cariesDecalGeometry || !cariesTexture) return undefined;
+    const mat = new THREE.MeshStandardMaterial({
+      map: cariesTexture,
+      transparent: true,
+      opacity: Math.min(0.96, 0.65 + phaseData.caries * 0.4),
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -4,
+      polygonOffsetUnits: -4,
+      roughness: 0.95,
+    });
+    const m = new THREE.Mesh(cariesDecalGeometry, mat);
+    m.renderOrder = 3;
+    decalTargetMesh.add(m);
+    return () => {
+      decalTargetMesh.remove(m);
+      mat.dispose();
+    };
+  }, [decalTargetMesh, cariesDecalGeometry, cariesTexture, phaseData.caries]);
+
+  // Same imperative attachment for the RCT access-hole decal.
+  useEffect(() => {
+    if (!decalTargetMesh || !accessDecalGeometry) return undefined;
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0x0a0a0a,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -4,
+      polygonOffsetUnits: -4,
+    });
+    const m = new THREE.Mesh(accessDecalGeometry, mat);
+    m.renderOrder = 3;
+    decalTargetMesh.add(m);
+    return () => {
+      decalTargetMesh.remove(m);
+      mat.dispose();
+    };
+  }, [decalTargetMesh, accessDecalGeometry]);
+
   // Build a single phase-aware material and apply it to every mesh inside
   // the cloned OBJ tree. Re-runs whenever the phase data or texture changes.
   useEffect(() => {
@@ -371,37 +416,12 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
           it without any further parent-group adjustments. */}
       <primitive object={clone} />
 
-      {/* Hyper-realistic cavity stain — projected as a DECAL onto the actual
-          OBJ surface so the texture wraps along the chewing surface and
-          stays visible from any rotation angle. */}
-      {cariesDecalGeometry && cariesTexture && (
-        <mesh geometry={cariesDecalGeometry} renderOrder={3}>
-          <meshStandardMaterial
-            map={cariesTexture}
-            transparent
-            opacity={Math.min(0.96, 0.65 + phaseData.caries * 0.4)}
-            depthWrite={false}
-            polygonOffset
-            polygonOffsetFactor={-4}
-            polygonOffsetUnits={-4}
-            roughness={0.95}
-          />
-        </mesh>
-      )}
-
-      {/* Access cavity (RCT prep) — same decal-projection treatment, just
-          a uniform black hole drilled into the chewing surface. */}
-      {accessDecalGeometry && (
-        <mesh geometry={accessDecalGeometry} renderOrder={3}>
-          <meshStandardMaterial
-            color="#0a0a0a"
-            depthWrite={false}
-            polygonOffset
-            polygonOffsetFactor={-4}
-            polygonOffsetUnits={-4}
-          />
-        </mesh>
-      )}
+      {/* Cavity + access-hole decals are NOT rendered here in JSX —
+          rendering them at world-identity drops them off the tooth (the
+          decal geometry is in the target mesh's local space). We add them
+          as Three.js children of the target mesh in a useEffect below so
+          they inherit the mesh's world transform and stay glued to the
+          chewing surface from every angle. */}
     </group>
   );
 }
@@ -749,8 +769,11 @@ export default function ToothProgressionPopup({ tooth, pathology, onClose }) {
         pointerEvents: 'auto',
       }}
     >
-      {/* Header */}
+      {/* Header — also acts as the drag handle when wrapped in
+          <DraggablePopup>. The cursor + data attribute tell the wrapper
+          that pointer events here should start a window drag. */}
       <div
+        data-popup-drag-handle="true"
         style={{
           display: 'flex',
           alignItems: 'flex-start',
@@ -758,6 +781,8 @@ export default function ToothProgressionPopup({ tooth, pathology, onClose }) {
           padding: '10px 14px',
           borderBottom: '1px solid rgba(255,255,255,0.08)',
           background: isDisease ? 'rgba(220,38,38,0.08)' : 'rgba(16,185,129,0.08)',
+          cursor: 'grab',
+          userSelect: 'none',
         }}
       >
         <div style={{ flex: 1, minWidth: 0 }}>
