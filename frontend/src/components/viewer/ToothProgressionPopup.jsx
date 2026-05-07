@@ -346,76 +346,55 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
           it without any further parent-group adjustments. */}
       <primitive object={clone} />
 
-      {/* Hyper-realistic cavity — a small dark patch hugging the chewing
-          surface. Anchored at the OBJ's actual occlusal end (top OR
-          bottom of the bounding box, auto-detected from vertex density)
-          and pulled slightly INTO the tooth so the dark area looks like
-          a recessed lesion rather than a protruding pimple. */}
-      {phaseData.caries > 0.15 && !phaseData.crownCap && bbSize && (() => {
-        const dir = Math.sign(occlusalY) || 1;       // +1 if crown up, -1 if crown down
-        const inset = -dir * stainRadius * 0.55;     // pull cavity inward into tooth body
+      {/* Cavity — a flat textured disc with the canvas-painted
+          black-bacteria + crack-lines pattern, sitting flush on the
+          actual chewing surface (auto-detected from vertex density,
+          so it lands on the crown end whether the OBJ was modeled
+          crown-up or crown-down). No 3D balls or holes — just lines. */}
+      {phaseData.caries > 0.15 && !phaseData.crownCap && bbSize && cariesTexture && (() => {
+        const dir = Math.sign(occlusalY) || 1;
         return (
-          <group position={[0, occlusalY * 0.92 + inset, 0]}>
-            {/* Recessed dark cavity body — half-sphere flattened into the
-                tooth so the rim hugs the chewing surface. Hidden behind
-                the tooth surface from the wrong side, visible as a dark
-                pit from the chewing-surface side. */}
-            <mesh>
-              <sphereGeometry args={[stainRadius * 0.85, 24, 16]} />
-              <meshStandardMaterial
-                color="#0a0301"
-                roughness={1.0}
-                metalness={0}
-              />
-            </mesh>
-            {/* Textured stain disc — placed flush on the chewing surface,
-                facing AWAY from the tooth body so the user sees it from
-                outside. The rotation flips depending on crown direction. */}
-            {cariesTexture && (
-              <mesh
-                position={[0, dir * stainRadius * 0.6, 0]}
-                rotation={[dir > 0 ? -Math.PI / 2 : Math.PI / 2, 0, 0]}
-                renderOrder={3}
-              >
-                <circleGeometry args={[stainRadius * 1.05, 32]} />
-                <meshStandardMaterial
-                  map={cariesTexture}
-                  transparent
-                  opacity={0.95}
-                  side={THREE.DoubleSide}
-                  depthWrite={false}
-                  roughness={0.95}
-                />
-              </mesh>
-            )}
-            {/* Pulpitis/abscess — angry red emissive blob deep in the pit */}
-            {phaseData.caries > 0.85 && (
-              <mesh position={[0, -dir * stainRadius * 0.3, 0]}>
-                <sphereGeometry args={[stainRadius * 0.4, 16, 12]} />
-                <meshStandardMaterial
-                  color="#3a0000"
-                  emissive="#7a0000"
-                  emissiveIntensity={0.8}
-                  transparent
-                  opacity={0.9}
-                />
-              </mesh>
-            )}
-          </group>
+          <mesh
+            position={[0, occlusalY * 0.96, 0]}
+            rotation={[dir > 0 ? -Math.PI / 2 : Math.PI / 2, 0, 0]}
+            renderOrder={3}
+          >
+            <circleGeometry args={[stainRadius * 1.4, 48]} />
+            <meshStandardMaterial
+              map={cariesTexture}
+              transparent
+              opacity={Math.min(0.97, 0.7 + phaseData.caries * 0.4)}
+              side={THREE.DoubleSide}
+              depthWrite={false}
+              polygonOffset
+              polygonOffsetFactor={-4}
+              polygonOffsetUnits={-4}
+              roughness={0.95}
+            />
+          </mesh>
         );
       })()}
 
-      {/* Access cavity (RCT prep) — black drilled-out hole on the chewing
-          surface. Auto-orients to the correct occlusal end too. */}
+      {/* Access cavity (RCT prep) — small flat black disc on the chewing
+          surface, NOT a drilled cylinder. Same flat-stain treatment. */}
       {phaseData.accessHole && bbSize && (() => {
         const dir = Math.sign(occlusalY) || 1;
         return (
-          <group position={[0, occlusalY * 0.92 - dir * bbSize[0] * 0.05, 0]}>
-            <mesh>
-              <cylinderGeometry args={[bbSize[0] * 0.16, bbSize[0] * 0.18, bbSize[0] * 0.2, 24]} />
-              <meshStandardMaterial color="#000" roughness={1} />
-            </mesh>
-          </group>
+          <mesh
+            position={[0, occlusalY * 0.96, 0]}
+            rotation={[dir > 0 ? -Math.PI / 2 : Math.PI / 2, 0, 0]}
+            renderOrder={3}
+          >
+            <circleGeometry args={[bbSize[0] * 0.18, 32]} />
+            <meshStandardMaterial
+              color="#000"
+              side={THREE.DoubleSide}
+              depthWrite={false}
+              polygonOffset
+              polygonOffsetFactor={-4}
+              polygonOffsetUnits={-4}
+            />
+          </mesh>
         );
       })()}
     </group>
