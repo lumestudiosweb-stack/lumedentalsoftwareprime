@@ -186,15 +186,15 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
   const obj = useLoader(OBJLoader, fileInfo.url);
 
   // Clone the OBJ tree (deep) and bake centering + scaling directly into
-  // the clone's transform. Doing it on the OBJECT instead of via parent
-  // <group> wrappers eliminates any chance of transform-order issues and
-  // keeps Box3 math consistent with what's actually rendered.
-  const { clone, decalTargetMesh, bbSize, bbTopY } = useMemo(() => {
+  // the clone's transform. Also detect which end of the bounding box is
+  // the chewing surface (some Sketchfab teeth are modeled crown-up, some
+  // crown-down) so we can place the cavity on the right side later.
+  const { clone, bbSize, bbTopY, occlusalY } = useMemo(() => {
     const c = obj.clone(true);
 
     const box = new THREE.Box3().setFromObject(c);
     if (box.isEmpty()) {
-      return { clone: c, decalTargetMesh: null, bbSize: null, bbTopY: 0 };
+      return { clone: c, bbSize: null, bbTopY: 0, occlusalY: 0 };
     }
 
     const size = new THREE.Vector3();
@@ -206,26 +206,39 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
     const targetHeight = anatomy.crownH + maxRoot;
     const s = targetHeight / Math.max(size.y, 0.001);
 
+    // Heuristic: the chewing surface (crown) has MORE vertex detail than
+    // the smooth root. Count vertices in the top 25% of the bounding box
+    // vs the bottom 25%. Whichever slab has more vertices is the crown.
+    const topThresh = box.max.y - size.y * 0.25;
+    const bottomThresh = box.min.y + size.y * 0.25;
+    let topCount = 0, bottomCount = 0;
+    c.traverse((child) => {
+      if (!child.isMesh || !child.geometry?.attributes?.position) return;
+      const pos = child.geometry.attributes.position;
+      // Sample every Nth vertex for speed on dense meshes
+      const step = Math.max(1, Math.floor(pos.count / 2000));
+      for (let i = 0; i < pos.count; i += step) {
+        const y = pos.getY(i);
+        if (y >= topThresh) topCount++;
+        else if (y <= bottomThresh) bottomCount++;
+      }
+    });
+    const crownAtTop = topCount >= bottomCount;
+
     // Mirror right-side teeth, scale to target height, then translate so
     // the bbox center sits exactly at world origin.
     c.scale.set(fileInfo.mirror ? -s : s, s, s);
     c.position.set(-center.x * s * (fileInfo.mirror ? -1 : 1), -center.y * s, -center.z * s);
     c.updateMatrixWorld(true);
 
-    // Find the first mesh inside the cloned tree — DecalGeometry needs a
-    // single Mesh to project onto. Most Sketchfab teeth ship one mesh; if
-    // there are multiple, the first one (usually the crown) is what the
-    // user sees on the occlusal surface so it's the right target.
-    let target = null;
-    c.traverse((child) => {
-      if (!target && child.isMesh) target = child;
-    });
-
+    const halfHeight = (size.y / 2) * s;
     return {
       clone: c,
-      decalTargetMesh: target,
       bbSize: [size.x * s, size.y * s, size.z * s],
-      bbTopY: (box.max.y - center.y) * s,
+      bbTopY: halfHeight,
+      // World-Y of the chewing surface after centering. + halfHeight if crown
+      // is at the top of the OBJ, - halfHeight if it's at the bottom.
+      occlusalY: crownAtTop ? halfHeight : -halfHeight,
     };
   }, [obj, anatomy, fileInfo.mirror]);
 
@@ -333,66 +346,78 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
           it without any further parent-group adjustments. */}
       <primitive object={clone} />
 
-      {/* Hyper-realistic cavity bulge — a small dark hemispherical bulge
-          poking up through the chewing surface, with the cariesTexture
-          mapped onto a flat disc on top of it. The 3D bulge is visible
-          from any rotation angle (unlike a flat plane), and the textured
-          disc gives the unmistakable black-bacteria-with-crack-lines
-          look when viewed from above. */}
-      {phaseData.caries > 0.15 && !phaseData.crownCap && bbSize && (
-        <group position={[0, bbTopY * 0.92, 0]}>
-          {/* Underlying dark cavity bulge — 3D so it's visible from the
-              side too. Positioned slightly INSIDE the tooth so the rim
-              hugs the chewing surface like an actual lesion. */}
-          <mesh position={[0, -stainRadius * 0.25, 0]}>
-            <sphereGeometry args={[stainRadius * 0.95, 24, 16]} />
-            <meshStandardMaterial
-              color="#0a0301"
-              roughness={1.0}
-              metalness={0}
-            />
-          </mesh>
-          {/* Surface stain disc on top — the textured "black bacteria
-              with crack lines" pattern, sitting flat on the cavity. */}
-          {cariesTexture && (
-            <mesh position={[0, stainRadius * 0.05, 0]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={3}>
-              <circleGeometry args={[stainRadius * 1.1, 32]} />
-              <meshStandardMaterial
-                map={cariesTexture}
-                transparent
-                opacity={0.96}
-                side={THREE.DoubleSide}
-                depthWrite={false}
-                roughness={0.95}
-              />
-            </mesh>
-          )}
-          {/* Small angry-red glow at the very center for pulpitis/abscess */}
-          {phaseData.caries > 0.85 && (
+      {/* Hyper-realistic cavity — a small dark patch hugging the chewing
+          surface. Anchored at the OBJ's actual occlusal end (top OR
+          bottom of the bounding box, auto-detected from vertex density)
+          and pulled slightly INTO the tooth so the dark area looks like
+          a recessed lesion rather than a protruding pimple. */}
+      {phaseData.caries > 0.15 && !phaseData.crownCap && bbSize && (() => {
+        const dir = Math.sign(occlusalY) || 1;       // +1 if crown up, -1 if crown down
+        const inset = -dir * stainRadius * 0.55;     // pull cavity inward into tooth body
+        return (
+          <group position={[0, occlusalY * 0.92 + inset, 0]}>
+            {/* Recessed dark cavity body — half-sphere flattened into the
+                tooth so the rim hugs the chewing surface. Hidden behind
+                the tooth surface from the wrong side, visible as a dark
+                pit from the chewing-surface side. */}
             <mesh>
-              <sphereGeometry args={[stainRadius * 0.35, 16, 12]} />
+              <sphereGeometry args={[stainRadius * 0.85, 24, 16]} />
               <meshStandardMaterial
-                color="#3a0000"
-                emissive="#5a0000"
-                emissiveIntensity={0.6}
-                transparent
-                opacity={0.85}
+                color="#0a0301"
+                roughness={1.0}
+                metalness={0}
               />
             </mesh>
-          )}
-        </group>
-      )}
+            {/* Textured stain disc — placed flush on the chewing surface,
+                facing AWAY from the tooth body so the user sees it from
+                outside. The rotation flips depending on crown direction. */}
+            {cariesTexture && (
+              <mesh
+                position={[0, dir * stainRadius * 0.6, 0]}
+                rotation={[dir > 0 ? -Math.PI / 2 : Math.PI / 2, 0, 0]}
+                renderOrder={3}
+              >
+                <circleGeometry args={[stainRadius * 1.05, 32]} />
+                <meshStandardMaterial
+                  map={cariesTexture}
+                  transparent
+                  opacity={0.95}
+                  side={THREE.DoubleSide}
+                  depthWrite={false}
+                  roughness={0.95}
+                />
+              </mesh>
+            )}
+            {/* Pulpitis/abscess — angry red emissive blob deep in the pit */}
+            {phaseData.caries > 0.85 && (
+              <mesh position={[0, -dir * stainRadius * 0.3, 0]}>
+                <sphereGeometry args={[stainRadius * 0.4, 16, 12]} />
+                <meshStandardMaterial
+                  color="#3a0000"
+                  emissive="#7a0000"
+                  emissiveIntensity={0.8}
+                  transparent
+                  opacity={0.9}
+                />
+              </mesh>
+            )}
+          </group>
+        );
+      })()}
 
-      {/* Access cavity (RCT prep) — small black drilled-out hole on the
-          chewing surface. Same 3D-bulge logic for guaranteed visibility. */}
-      {phaseData.accessHole && bbSize && (
-        <group position={[0, bbTopY * 0.92, 0]}>
-          <mesh position={[0, -bbSize[0] * 0.05, 0]}>
-            <cylinderGeometry args={[bbSize[0] * 0.16, bbSize[0] * 0.18, bbSize[0] * 0.2, 24]} />
-            <meshStandardMaterial color="#000" roughness={1} />
-          </mesh>
-        </group>
-      )}
+      {/* Access cavity (RCT prep) — black drilled-out hole on the chewing
+          surface. Auto-orients to the correct occlusal end too. */}
+      {phaseData.accessHole && bbSize && (() => {
+        const dir = Math.sign(occlusalY) || 1;
+        return (
+          <group position={[0, occlusalY * 0.92 - dir * bbSize[0] * 0.05, 0]}>
+            <mesh>
+              <cylinderGeometry args={[bbSize[0] * 0.16, bbSize[0] * 0.18, bbSize[0] * 0.2, 24]} />
+              <meshStandardMaterial color="#000" roughness={1} />
+            </mesh>
+          </group>
+        );
+      })()}
     </group>
   );
 }
