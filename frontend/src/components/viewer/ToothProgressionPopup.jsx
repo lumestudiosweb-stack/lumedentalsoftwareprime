@@ -3,7 +3,6 @@ import { Canvas, useFrame, useLoader } from '@react-three/fiber';
 import { OrbitControls, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
-import { DecalGeometry } from 'three/examples/jsm/geometries/DecalGeometry.js';
 
 /* ──────────────────────────────────────────────────────────────────────
    ToothProgressionPopup — 3D simulation that pops next to a tooth and
@@ -296,93 +295,11 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
   );
   useEffect(() => () => { cariesTexture && cariesTexture.dispose(); }, [cariesTexture]);
 
-  // Decal geometry — projects the cariesTexture onto the actual OBJ
-  // surface so the cavity wraps along the chewing surface instead of
-  // floating as a flat disc above it. This is what makes the stain stay
-  // visible (and curve correctly) when the user rotates the tooth.
-  const cariesDecalGeometry = useMemo(() => {
-    if (!decalTargetMesh || !bbSize || !cariesTexture) return null;
-    if (phaseData.caries < 0.15 || phaseData.crownCap) return null;
-    try {
-      // Project from straight above the tooth, looking straight down. The
-      // decal box is sized to roughly cover one occlusal surface, with
-      // depth large enough to wrap into any deep grooves.
-      const stainR = Math.min(bbSize[0], bbSize[2]) * 0.45 * phaseData.caries;
-      const projectorPos = new THREE.Vector3(0, bbTopY + 1, 0);
-      const lookTarget   = new THREE.Vector3(0, 0, 0);
-      const up           = new THREE.Vector3(0, 0, 1);
-      const m = new THREE.Matrix4().lookAt(projectorPos, lookTarget, up);
-      const orientation = new THREE.Euler().setFromRotationMatrix(m);
-      const decalSize = new THREE.Vector3(stainR * 2.4, stainR * 2.4, Math.max(bbSize[1] * 0.6, stainR * 2));
-      return new DecalGeometry(decalTargetMesh, projectorPos, orientation, decalSize);
-    } catch {
-      return null;
-    }
-  }, [decalTargetMesh, bbSize, bbTopY, cariesTexture, phaseData.caries, phaseData.crownCap]);
-  useEffect(() => () => { cariesDecalGeometry && cariesDecalGeometry.dispose(); }, [cariesDecalGeometry]);
-
-  // Same for the RCT access cavity — a smaller, perfectly black decal.
-  const accessDecalGeometry = useMemo(() => {
-    if (!decalTargetMesh || !bbSize || !phaseData.accessHole) return null;
-    try {
-      const r = Math.min(bbSize[0], bbSize[2]) * 0.18;
-      const projectorPos = new THREE.Vector3(0, bbTopY + 1, 0);
-      const lookTarget   = new THREE.Vector3(0, 0, 0);
-      const up           = new THREE.Vector3(0, 0, 1);
-      const m = new THREE.Matrix4().lookAt(projectorPos, lookTarget, up);
-      const orientation = new THREE.Euler().setFromRotationMatrix(m);
-      const decalSize = new THREE.Vector3(r * 2, r * 2, Math.max(bbSize[1] * 0.6, r * 2));
-      return new DecalGeometry(decalTargetMesh, projectorPos, orientation, decalSize);
-    } catch {
-      return null;
-    }
-  }, [decalTargetMesh, bbSize, bbTopY, phaseData.accessHole]);
-  useEffect(() => () => { accessDecalGeometry && accessDecalGeometry.dispose(); }, [accessDecalGeometry]);
-
-  // Attach the cavity decal as a Three.js child of the target mesh, so it
-  // inherits the same world transform (scale, mirror, position) and stays
-  // glued onto the chewing surface from any rotation angle. Rendering the
-  // decal as a sibling at world-identity makes it disappear because the
-  // decal positions are in the target mesh's LOCAL space.
-  useEffect(() => {
-    if (!decalTargetMesh || !cariesDecalGeometry || !cariesTexture) return undefined;
-    const mat = new THREE.MeshStandardMaterial({
-      map: cariesTexture,
-      transparent: true,
-      opacity: Math.min(0.96, 0.65 + phaseData.caries * 0.4),
-      depthWrite: false,
-      polygonOffset: true,
-      polygonOffsetFactor: -4,
-      polygonOffsetUnits: -4,
-      roughness: 0.95,
-    });
-    const m = new THREE.Mesh(cariesDecalGeometry, mat);
-    m.renderOrder = 3;
-    decalTargetMesh.add(m);
-    return () => {
-      decalTargetMesh.remove(m);
-      mat.dispose();
-    };
-  }, [decalTargetMesh, cariesDecalGeometry, cariesTexture, phaseData.caries]);
-
-  // Same imperative attachment for the RCT access-hole decal.
-  useEffect(() => {
-    if (!decalTargetMesh || !accessDecalGeometry) return undefined;
-    const mat = new THREE.MeshStandardMaterial({
-      color: 0x0a0a0a,
-      depthWrite: false,
-      polygonOffset: true,
-      polygonOffsetFactor: -4,
-      polygonOffsetUnits: -4,
-    });
-    const m = new THREE.Mesh(accessDecalGeometry, mat);
-    m.renderOrder = 3;
-    decalTargetMesh.add(m);
-    return () => {
-      decalTargetMesh.remove(m);
-      mat.dispose();
-    };
-  }, [decalTargetMesh, accessDecalGeometry]);
+  // (Decal-based approach was unreliable across different OBJ topologies —
+  // some teeth ship the crown as a sub-mesh whose matrixWorld didn't pick
+  // up the clone's scale in time, so the decal landed off-tooth or got
+  // clipped. Switched to a simple 3D-bulge approach below that's
+  // guaranteed visible from any angle.)
 
   // Build a single phase-aware material and apply it to every mesh inside
   // the cloned OBJ tree. Re-runs whenever the phase data or texture changes.
@@ -416,12 +333,66 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
           it without any further parent-group adjustments. */}
       <primitive object={clone} />
 
-      {/* Cavity + access-hole decals are NOT rendered here in JSX —
-          rendering them at world-identity drops them off the tooth (the
-          decal geometry is in the target mesh's local space). We add them
-          as Three.js children of the target mesh in a useEffect below so
-          they inherit the mesh's world transform and stay glued to the
-          chewing surface from every angle. */}
+      {/* Hyper-realistic cavity bulge — a small dark hemispherical bulge
+          poking up through the chewing surface, with the cariesTexture
+          mapped onto a flat disc on top of it. The 3D bulge is visible
+          from any rotation angle (unlike a flat plane), and the textured
+          disc gives the unmistakable black-bacteria-with-crack-lines
+          look when viewed from above. */}
+      {phaseData.caries > 0.15 && !phaseData.crownCap && bbSize && (
+        <group position={[0, bbTopY * 0.92, 0]}>
+          {/* Underlying dark cavity bulge — 3D so it's visible from the
+              side too. Positioned slightly INSIDE the tooth so the rim
+              hugs the chewing surface like an actual lesion. */}
+          <mesh position={[0, -stainRadius * 0.25, 0]}>
+            <sphereGeometry args={[stainRadius * 0.95, 24, 16]} />
+            <meshStandardMaterial
+              color="#0a0301"
+              roughness={1.0}
+              metalness={0}
+            />
+          </mesh>
+          {/* Surface stain disc on top — the textured "black bacteria
+              with crack lines" pattern, sitting flat on the cavity. */}
+          {cariesTexture && (
+            <mesh position={[0, stainRadius * 0.05, 0]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={3}>
+              <circleGeometry args={[stainRadius * 1.1, 32]} />
+              <meshStandardMaterial
+                map={cariesTexture}
+                transparent
+                opacity={0.96}
+                side={THREE.DoubleSide}
+                depthWrite={false}
+                roughness={0.95}
+              />
+            </mesh>
+          )}
+          {/* Small angry-red glow at the very center for pulpitis/abscess */}
+          {phaseData.caries > 0.85 && (
+            <mesh>
+              <sphereGeometry args={[stainRadius * 0.35, 16, 12]} />
+              <meshStandardMaterial
+                color="#3a0000"
+                emissive="#5a0000"
+                emissiveIntensity={0.6}
+                transparent
+                opacity={0.85}
+              />
+            </mesh>
+          )}
+        </group>
+      )}
+
+      {/* Access cavity (RCT prep) — small black drilled-out hole on the
+          chewing surface. Same 3D-bulge logic for guaranteed visibility. */}
+      {phaseData.accessHole && bbSize && (
+        <group position={[0, bbTopY * 0.92, 0]}>
+          <mesh position={[0, -bbSize[0] * 0.05, 0]}>
+            <cylinderGeometry args={[bbSize[0] * 0.16, bbSize[0] * 0.18, bbSize[0] * 0.2, 24]} />
+            <meshStandardMaterial color="#000" roughness={1} />
+          </mesh>
+        </group>
+      )}
     </group>
   );
 }
