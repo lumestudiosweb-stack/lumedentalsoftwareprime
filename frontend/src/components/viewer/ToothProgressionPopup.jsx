@@ -427,10 +427,15 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
   );
 }
 
-/* Hyper-realistic caries stain: dark central pit with branching black
-   fissure cracks radiating outward, plus scattered specks of darker decay.
-   Rendered to a CanvasTexture so we can map it onto a circular plane on
-   the occlusal surface — much more convincing than a solid dark disc. */
+/* Realistic dental-cavity texture, painted onto a canvas so we can
+   `multiply`-blend it into the tooth's diffuse map. Aiming for the look
+   of an actual occlusal lesion:
+     • irregular organic outline (not a clean circle)
+     • soft brown stained halo blending into the enamel
+     • dark brown body with a clearly-darker central pit
+     • a few subtle dark tracking lines following grooves (NOT a starburst)
+     • fine specks + a touch of moisture highlight for depth
+─────────────────────────────────────────────────────────────────────── */
 function makeCariesTexture(severity) {
   const SIZE = 512;
   const canvas = document.createElement('canvas');
@@ -440,70 +445,85 @@ function makeCariesTexture(severity) {
   ctx.clearRect(0, 0, SIZE, SIZE);
   const cx = SIZE / 2, cy = SIZE / 2;
 
-  // Severity ramps how dark/large the cavity reads. Capped to 1.
   const sev = Math.min(1, Math.max(0, severity));
-  const coreA = Math.min(1, 0.78 + sev * 0.22);
-  const midA  = Math.min(1, 0.55 + sev * 0.4);
-  const haloR = SIZE * (0.32 + sev * 0.18);
 
-  // Soft brown halo — bleed of decay around the lesion
-  const halo = ctx.createRadialGradient(cx, cy, 6, cx, cy, haloR);
-  halo.addColorStop(0,   `rgba(40,18,4,${coreA})`);
-  halo.addColorStop(0.45,`rgba(75,38,14,${midA})`);
-  halo.addColorStop(1,   'rgba(120,70,30,0)');
-  ctx.fillStyle = halo;
+  // ── 1. Irregular outline — overlap several brown radial gradients at
+  //     slightly offset positions so the lesion has an organic, blobby
+  //     edge instead of a perfect disc.
+  const blobCount = 6;
+  for (let i = 0; i < blobCount; i++) {
+    const ang = (i / blobCount) * Math.PI * 2 + Math.random() * 0.5;
+    const off = SIZE * (0.04 + Math.random() * 0.05);
+    const ox = cx + Math.cos(ang) * off;
+    const oy = cy + Math.sin(ang) * off;
+    const r = SIZE * (0.22 + Math.random() * 0.10);
+    const g = ctx.createRadialGradient(ox, oy, 4, ox, oy, r);
+    g.addColorStop(0,    `rgba(50,25,8,${0.55 + sev * 0.30})`);
+    g.addColorStop(0.55, `rgba(95,55,22,${0.40 + sev * 0.30})`);
+    g.addColorStop(1,    'rgba(140,90,45,0)');           // soft fade to nothing
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, SIZE, SIZE);
+  }
+
+  // ── 2. Inner darker brown body — concentrates color toward the center,
+  //     gives the lesion its main stained appearance.
+  const body = ctx.createRadialGradient(cx, cy, 0, cx, cy, SIZE * 0.26);
+  body.addColorStop(0,    `rgba(28,12,2,${0.85 + sev * 0.10})`);
+  body.addColorStop(0.50, `rgba(58,28,8,${0.65 + sev * 0.20})`);
+  body.addColorStop(1,    'rgba(85,45,18,0)');
+  ctx.fillStyle = body;
   ctx.fillRect(0, 0, SIZE, SIZE);
 
-  // Branching black fissure cracks
-  const drawFissure = (angle, length, width) => {
-    ctx.strokeStyle = `rgba(8,4,0,${0.92})`;
-    ctx.lineWidth = width;
+  // ── 3. A few subtle dark tracking lines following the natural fissure
+  //     grooves on the chewing surface. Real cavities track along grooves
+  //     rather than radiating in all directions — keep this small.
+  const trackCount = 2 + Math.round(sev * 2);
+  for (let i = 0; i < trackCount; i++) {
+    const angle = (i / trackCount) * Math.PI * 2 + Math.random() * 0.7;
+    const len = SIZE * (0.14 + sev * 0.12) * (0.6 + Math.random() * 0.5);
+    const segs = 12;
+    ctx.strokeStyle = `rgba(20,8,0,${0.55 + sev * 0.25})`;
+    ctx.lineWidth = 4 + Math.random() * (4 + sev * 3);
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.beginPath();
     ctx.moveTo(cx, cy);
-    let x = cx, y = cy;
-    const steps = 16;
-    for (let s = 1; s <= steps; s++) {
-      const t = s / steps;
-      const r = length * t;
-      const a = angle + (Math.random() - 0.5) * 0.55;
-      const wobble = (Math.random() - 0.5) * 18 * (1 - t);
-      x = cx + Math.cos(a) * r + wobble;
-      y = cy + Math.sin(a) * r + wobble;
-      ctx.lineTo(x, y);
+    for (let s = 1; s <= segs; s++) {
+      const t = s / segs;
+      const r = len * t;
+      const a = angle + (Math.random() - 0.5) * 0.35;
+      const wobble = (Math.random() - 0.5) * 10 * (1 - t);
+      ctx.lineTo(cx + Math.cos(a) * r + wobble, cy + Math.sin(a) * r + wobble);
     }
     ctx.stroke();
-  };
-  const numFissures = 6 + Math.round(sev * 4);
-  for (let i = 0; i < numFissures; i++) {
-    const angle = (i / numFissures) * Math.PI * 2 + (Math.random() - 0.5) * 0.5;
-    const len = SIZE * (0.18 + sev * 0.22) * (0.7 + Math.random() * 0.6);
-    const w = 7 + Math.random() * (8 + sev * 8);
-    drawFissure(angle, len, w);
-    drawFissure(angle, len * 0.7, w * 0.45);                 // inner darker streak
-    if (Math.random() < 0.55) {
-      drawFissure(angle + (Math.random() - 0.5) * 0.7, len * 0.45, w * 0.5); // branch
-    }
   }
 
-  // Re-darken the very center for depth (the pit at the bottom of the cavity)
-  const pit = ctx.createRadialGradient(cx, cy, 0, cx, cy, SIZE * 0.16);
-  pit.addColorStop(0, 'rgba(0,0,0,1)');
-  pit.addColorStop(0.6, 'rgba(15,5,2,0.85)');
-  pit.addColorStop(1, 'rgba(15,5,2,0)');
+  // ── 4. Central dark pit — the bottom of the cavity, smaller and
+  //     darker so it reads as actual depth rather than a flat blot.
+  const pitR = SIZE * (0.10 + sev * 0.04);
+  const pit = ctx.createRadialGradient(cx, cy, 0, cx, cy, pitR);
+  pit.addColorStop(0,    'rgba(2,1,0,0.98)');
+  pit.addColorStop(0.55, 'rgba(15,6,2,0.85)');
+  pit.addColorStop(1,    'rgba(20,10,4,0)');
   ctx.fillStyle = pit;
   ctx.fillRect(0, 0, SIZE, SIZE);
 
-  // Scattered dark specks
-  ctx.fillStyle = 'rgba(8,2,0,0.95)';
-  for (let i = 0; i < 50; i++) {
-    const r = SIZE * (0.05 + Math.random() * 0.30);
+  // ── 5. Tiny specks + a faint moisture highlight at one edge so the
+  //     surface reads as wet/organic instead of a painted patch.
+  ctx.fillStyle = 'rgba(15,6,0,0.85)';
+  for (let i = 0; i < 38; i++) {
+    const r = SIZE * (0.04 + Math.random() * 0.26);
     const a = Math.random() * Math.PI * 2;
     ctx.beginPath();
-    ctx.arc(cx + Math.cos(a) * r, cy + Math.sin(a) * r, 1 + Math.random() * 4, 0, Math.PI * 2);
+    ctx.arc(cx + Math.cos(a) * r, cy + Math.sin(a) * r, 0.7 + Math.random() * 2.4, 0, Math.PI * 2);
     ctx.fill();
   }
+  // Faint specular streak from a single direction (light from upper-left)
+  const hi = ctx.createRadialGradient(cx - SIZE * 0.08, cy - SIZE * 0.06, 0, cx - SIZE * 0.08, cy - SIZE * 0.06, SIZE * 0.13);
+  hi.addColorStop(0, 'rgba(120,90,60,0.18)');
+  hi.addColorStop(1, 'rgba(120,90,60,0)');
+  ctx.fillStyle = hi;
+  ctx.fillRect(0, 0, SIZE, SIZE);
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
