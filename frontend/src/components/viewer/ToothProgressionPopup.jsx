@@ -377,14 +377,19 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
       // sane fallback if the raycast didn't return a UV — the chewing
       // surface is usually unwrapped near the texture's center).
       const cariesImg = cariesTexture.image;
-      const stampSize = Math.min(W, H) * 0.32 * Math.min(1, phaseData.caries);
+      const stampSize = Math.min(W, H) * 0.40 * Math.min(1, 0.6 + phaseData.caries * 0.55);
       const ux = occlusalUV ? occlusalUV.x : 0.5;
       const uy = occlusalUV ? occlusalUV.y : 0.5;
       const cx = ux * W;
       const cy = (1 - uy) * H;
-      // Multiply blend so the cavity darkens the underlying enamel (looks
-      // etched into the tooth instead of pasted on top).
+      // First darken the underlying enamel via 'multiply' (preserves tooth
+      // color through the soft edges), then layer the dark center on top
+      // with 'source-over' so the actual cavity hole is unmistakeably
+      // dark even on a light-toned tooth texture. Two passes = real
+      // cavity that never looks like a faint stain.
       ctx.globalCompositeOperation = 'multiply';
+      ctx.drawImage(cariesImg, cx - stampSize / 2, cy - stampSize / 2, stampSize, stampSize);
+      ctx.globalCompositeOperation = 'source-over';
       ctx.drawImage(cariesImg, cx - stampSize / 2, cy - stampSize / 2, stampSize, stampSize);
       ctx.globalCompositeOperation = 'source-over';
 
@@ -536,20 +541,37 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
         />
       )}
 
-      {/* Periapical lesion — dim dark-red halo around the root apex. */}
+      {/* Periapical abscess — anatomical inflamed-tissue swelling at the
+          root apex. Built from several overlapping crimson blobs of
+          slightly different sizes/positions so the lesion has an
+          irregular swollen-tissue silhouette, not a sphere. Pulses
+          gently to read as living infected tissue. The whole assembly
+          is connected upward to the root by a visible "infection trail"
+          running through the canal — the patient sees the pathway
+          from the cavity → pulp → canal → apex → abscess. */}
       {showApical && bbSize && (
-        <mesh position={[0, apexY - dir * Math.min(bbSize[1], 12) * 0.06, 0]}>
-          <sphereGeometry args={[Math.min(bbSize[0], bbSize[2]) * 0.42 * (0.6 + phaseData.apicalLesion * 0.6), 24, 16]} />
-          <meshStandardMaterial
-            color="#5a1208"
-            emissive="#3a0a04"
-            emissiveIntensity={0.5}
-            transparent
-            opacity={0.6 * Math.min(1, phaseData.apicalLesion * 1.3)}
-            depthWrite={false}
-            roughness={1}
-          />
-        </mesh>
+        <Abscess
+          apexY={apexY}
+          dir={dir}
+          baseRadius={Math.min(bbSize[0], bbSize[2]) * 0.46 * (0.55 + phaseData.apicalLesion * 0.6)}
+          intensity={Math.min(1, phaseData.apicalLesion * 1.3)}
+          rootHeight={rootHalf}
+        />
+      )}
+
+      {/* Infected pulp/canal trail — a soft dark-red emissive cone
+          running INSIDE the root from the pulp chamber down to the apex,
+          visible during pulpitis / canal infection / abscess phases.
+          Combined with the slight enamel translucency, this shows the
+          infection physically tracking down through the root. */}
+      {(phaseData.canalState === 'infected' || phaseData.canalState === 'partial') && bbSize && !phaseData.crownCap && (
+        <CanalInfection
+          pulpY={pulpY}
+          apexY={apexY}
+          dir={dir}
+          radius={Math.min(bbSize[0], bbSize[2]) * 0.10}
+          severity={phaseData.canalState === 'infected' ? 1 : 0.5}
+        />
       )}
 
       {/* Gutta-percha — rust-coloured cone fully INSIDE the root canal.
@@ -617,6 +639,126 @@ function PulpitisGlow({ position, radius, intensity }) {
         emissiveIntensity={intensity}
         transparent
         opacity={0.55}
+        depthWrite={false}
+        roughness={1}
+      />
+    </mesh>
+  );
+}
+
+/* Anatomical periapical abscess. Built from several overlapping crimson
+   blobs of slightly different sizes/positions plus a small inflammation
+   halo, so the lesion reads as irregular swollen infected tissue rather
+   than a perfect sphere. A vertical "infection trail" connects it back
+   up into the root so the patient can see the pathway from cavity →
+   pulp → canal → apex → abscess. Pulses gently to feel alive. */
+function Abscess({ apexY, dir, baseRadius, intensity, rootHeight }) {
+  const ref = useRef();
+  useFrame(({ clock }) => {
+    if (!ref.current) return;
+    const p = 1 + Math.sin(clock.elapsedTime * 1.4) * 0.04;
+    ref.current.scale.set(p, p, p);
+  });
+  // Several offsets — irregular swelling silhouette
+  const blobs = [
+    { o: [0,           -dir * baseRadius * 0.10, 0           ], s: 1.00, c: '#5a0d04', e: '#6e0e04' },
+    { o: [ baseRadius * 0.30, -dir * baseRadius * 0.20,  baseRadius * 0.10], s: 0.78, c: '#48090a', e: '#5a0a04' },
+    { o: [-baseRadius * 0.32, -dir * baseRadius * 0.16, -baseRadius * 0.08], s: 0.72, c: '#3a0608', e: '#4a0808' },
+    { o: [ baseRadius * 0.10, -dir * baseRadius * 0.32,  baseRadius * 0.18], s: 0.55, c: '#2c0608', e: '#3a0608' },
+    { o: [-baseRadius * 0.15, -dir * baseRadius * 0.36, -baseRadius * 0.16], s: 0.48, c: '#280406', e: '#360506' },
+  ];
+  const opacity = 0.55 + intensity * 0.30;
+  // The "infection trail" — a thin column from the apex up into the
+  // root canal. Connects visually to the canal infection cone above.
+  const trailLen = rootHeight * 0.45;
+  return (
+    <group ref={ref} position={[0, apexY, 0]}>
+      {/* Soft outer inflammation halo */}
+      <mesh>
+        <sphereGeometry args={[baseRadius * 1.35, 24, 18]} />
+        <meshStandardMaterial
+          color="#3a0c08"
+          emissive="#3a0c08"
+          emissiveIntensity={0.18 * intensity}
+          transparent
+          opacity={0.18 * intensity}
+          depthWrite={false}
+          roughness={1}
+        />
+      </mesh>
+      {/* Irregular swelling — multiple offset blobs */}
+      {blobs.map((b, i) => (
+        <mesh key={i} position={b.o}>
+          <sphereGeometry args={[baseRadius * b.s, 22, 16]} />
+          <meshStandardMaterial
+            color={b.c}
+            emissive={b.e}
+            emissiveIntensity={0.35 * intensity}
+            transparent
+            opacity={opacity}
+            depthWrite={false}
+            roughness={1}
+            metalness={0}
+          />
+        </mesh>
+      ))}
+      {/* Vascular gradient tint on top — subtle purple/red */}
+      <mesh position={[baseRadius * 0.05, -dir * baseRadius * 0.05, baseRadius * 0.05]}>
+        <sphereGeometry args={[baseRadius * 0.55, 18, 14]} />
+        <meshStandardMaterial
+          color="#1a020a"
+          emissive="#480814"
+          emissiveIntensity={0.5 * intensity}
+          transparent
+          opacity={0.55 * intensity}
+          depthWrite={false}
+          roughness={1}
+        />
+      </mesh>
+      {/* Infection trail rising from apex into root canal — visual bridge
+          showing the abscess is fed from the infected tooth above. */}
+      <mesh position={[0, dir * trailLen * 0.5, 0]} rotation={[dir > 0 ? Math.PI : 0, 0, 0]}>
+        <coneGeometry args={[baseRadius * 0.22, trailLen, 16]} />
+        <meshStandardMaterial
+          color="#3a0608"
+          emissive="#5a0a08"
+          emissiveIntensity={0.45 * intensity}
+          transparent
+          opacity={0.5 * intensity}
+          depthWrite={false}
+          roughness={1}
+        />
+      </mesh>
+    </group>
+  );
+}
+
+/* Visualizes infection tracking down through the root canal. A thin dark
+   reddish-emissive cone from the pulp chamber down to the root apex,
+   visible as the disease advances through pulpitis → canal infection. */
+function CanalInfection({ pulpY, apexY, dir, radius, severity }) {
+  const ref = useRef();
+  useFrame(({ clock }) => {
+    if (!ref.current?.material) return;
+    // Slow pulse so the spreading infection reads as living tissue
+    const t = clock.elapsedTime * 1.2;
+    ref.current.material.emissiveIntensity = (0.45 + Math.sin(t) * 0.15) * severity;
+  });
+  const length = Math.abs(apexY - pulpY) * 0.95;
+  const centerY = (pulpY + apexY) / 2;
+  return (
+    <mesh
+      ref={ref}
+      position={[0, centerY, 0]}
+      rotation={[dir > 0 ? Math.PI : 0, 0, 0]}
+    >
+      <coneGeometry args={[radius * 1.4, length, 16]} />
+      <meshStandardMaterial
+        color="#400608"
+        emissive="#7a0e08"
+        emissiveIntensity={0.55 * severity}
+        transparent
+        opacity={0.62 * severity}
         depthWrite={false}
         roughness={1}
       />
@@ -715,12 +857,14 @@ function makeCariesTexture(severity, stageHint /* 'enamel' | 'dentin' | 'deep' |
   }
 
   // ── Central cavitation pit (dentin / deep / pulp only). The actual
-  //    "hole" punched through the enamel.
+  //    "hole" punched through the enamel — fully opaque at center so the
+  //    `source-over` second pass guarantees a visibly black cavity.
   if (hasPit) {
-    const r = pitR * (0.85 + sev * 0.35);
+    const r = pitR * (0.95 + sev * 0.45);
     const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
     g.addColorStop(0,   'rgba(0,0,0,1)');
-    g.addColorStop(0.6, 'rgba(5,2,0,0.92)');
+    g.addColorStop(0.4, 'rgba(2,1,0,0.98)');
+    g.addColorStop(0.8, 'rgba(10,4,1,0.55)');
     g.addColorStop(1,   'rgba(15,6,2,0)');
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, SIZE, SIZE);
