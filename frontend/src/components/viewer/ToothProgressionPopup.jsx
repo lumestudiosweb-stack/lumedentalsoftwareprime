@@ -404,9 +404,12 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
     const material = new THREE.MeshPhysicalMaterial({
       map: mapTex,
       color: new THREE.Color(surfaceColor),
-      roughness: phaseData.crownCap ? 0.18 : 0.42,
-      clearcoat: phaseData.crownCap ? 0.9 : 0.35,
-      clearcoatRoughness: phaseData.crownCap ? 0.08 : 0.30,
+      // Ceramic restoration = very smooth, high clearcoat. Natural enamel
+      // = slight surface roughness with a thin clearcoat for wet sheen.
+      roughness: phaseData.crownCap ? 0.12 : 0.42,
+      clearcoat: phaseData.crownCap ? 1.0 : 0.35,
+      clearcoatRoughness: phaseData.crownCap ? 0.05 : 0.30,
+      reflectivity: phaseData.crownCap ? 0.65 : 0.5,
       metalness: 0,
       // Subtle enamel translucency — enough to let the inner pulpitis
       // glow bleed through the crown but not so much that the tooth
@@ -439,16 +442,27 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
   //                           the tooth hurts.
   //  • periapical lesion    — dim red bone-loss halo at the root apex
   //                           when the abscess phase fires.
-  //  • gutta-percha fill    — orange-rust fill running through the root
-  //                           when the obturation phase fires.
-  //  • apical access pit    — small dark drilled pit on the chewing
+  //  • gutta-percha fill    — rust-coloured cone inside the root canal
+  //                           during obturation. Strictly contained
+  //                           within the root volume so it can never
+  //                           protrude past the apex.
+  //  • access pit           — small dark drilled cavity on the chewing
   //                           surface during endodontic access.
+  //
+  //  All internal overlays are hidden during the crown-cap (post-
+  //  restoration) phase so the patient sees a clean restored tooth.
   const dir = Math.sign(occlusalY) || 1;                   // +1 crown up, -1 crown down
   const apexY = -occlusalY * 0.95;                         // root tip world-Y
   const pulpY = occlusalY * 0.55;                          // approx. pulp chamber world-Y
-  const showPulp = phaseData.pulpEmissive > 0.2 || phaseData.caries > 0.85;
-  const showApical = phaseData.apicalLesion > 0.1;
-  const showGutta = phaseData.gutta > 0;
+  const showPulp    = !phaseData.crownCap && (phaseData.pulpEmissive > 0.2 || phaseData.caries > 0.85);
+  const showApical  = !phaseData.crownCap && phaseData.apicalLesion > 0.1;
+  const showGutta   = !phaseData.crownCap && phaseData.gutta > 0;
+  // Gutta-percha geometry — sized so its full extent stays INSIDE the
+  // root region (between the cementoenamel junction and the apex). Never
+  // protrudes past the tooth's silhouette.
+  const rootHalf   = Math.abs(occlusalY);                  // half the OBJ height = root length-ish
+  const guttaCenterY = -occlusalY / 2;                     // midway between origin and apex
+  const guttaLength  = rootHalf * 0.78;                    // 78% of root, leaves clearance at apex + crown
 
   return (
     <group>
@@ -483,11 +497,16 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
         </mesh>
       )}
 
-      {/* Gutta-percha — warm rust-coloured cone running down through the
-          root. Rendered as a stretched cone aligned along the long axis. */}
+      {/* Gutta-percha — rust-coloured cone fully INSIDE the root canal.
+          Aligned along the long axis with its tip at (or just shy of)
+          the apex, base near the pulp-chamber level. Cannot protrude
+          past the tooth silhouette. */}
       {showGutta && bbSize && (
-        <mesh position={[0, apexY * 0.55, 0]} rotation={[dir > 0 ? Math.PI : 0, 0, 0]}>
-          <coneGeometry args={[Math.min(bbSize[0], bbSize[2]) * 0.085, Math.min(bbSize[1], 14) * 0.55, 18]} />
+        <mesh
+          position={[0, guttaCenterY, 0]}
+          rotation={[dir > 0 ? Math.PI : 0, 0, 0]}
+        >
+          <coneGeometry args={[Math.min(bbSize[0], bbSize[2]) * 0.07, guttaLength, 18]} />
           <meshStandardMaterial
             color="#c9551c"
             emissive="#5a1f08"
@@ -498,9 +517,9 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
         </mesh>
       )}
 
-      {/* Endodontic access pit — small dark drilled cavity on the
-          chewing surface. Just a tiny darkened disc; not a 3D hole. */}
-      {phaseData.accessHole && bbSize && (
+      {/* Endodontic access pit — small darkened cavity on the chewing
+          surface. Hidden once the tooth is crowned. */}
+      {phaseData.accessHole && !phaseData.crownCap && bbSize && (
         <mesh
           position={[0, occlusalY * 0.99, 0]}
           rotation={[dir > 0 ? -Math.PI / 2 : Math.PI / 2, 0, 0]}
@@ -508,7 +527,7 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
         >
           <circleGeometry args={[Math.min(bbSize[0], bbSize[2]) * 0.16, 32]} />
           <meshStandardMaterial
-            color="#000"
+            color="#0a0604"
             side={THREE.DoubleSide}
             depthWrite={false}
             polygonOffset
