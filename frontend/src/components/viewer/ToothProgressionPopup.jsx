@@ -312,9 +312,16 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
   // texture only when the bucket changes (avoids hammering the canvas API
   // every frame as caries level animates).
   const sevBucket = Math.round(phaseData.caries * 4);
+  // Stage hint for the painted cavity — drives which clinical look the
+  // canvas painter renders (white-spot / brown stain / cavitation /
+  // pulp-breach). Mirrors the phase severity bands.
+  const cariesStage = phaseData.caries <= 0.32 ? 'enamel'
+                    : phaseData.caries <= 0.6  ? 'dentin'
+                    : phaseData.caries <= 0.85 ? 'deep'
+                    : 'pulp';
   const cariesTexture = useMemo(
-    () => (sevBucket > 0 ? makeCariesTexture(sevBucket / 4) : null),
-    [sevBucket]
+    () => (sevBucket > 0 ? makeCariesTexture(sevBucket / 4, cariesStage) : null),
+    [sevBucket, cariesStage]
   );
   useEffect(() => () => { cariesTexture && cariesTexture.dispose(); }, [cariesTexture]);
 
@@ -388,16 +395,27 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
   // Build a single phase-aware material and apply it to every mesh inside
   // the cloned OBJ tree. Uses the cavity-painted diffuse when available
   // (so the cavity is etched into the tooth's surface), else the original.
+  // Crown cap = ceramic crown, full opaque + glossy. Natural tooth = enamel
+  // with a small amount of transmission so the pulpitis glow can read
+  // faintly through the crown.
   useEffect(() => {
     const useTexture = !phaseData.crownCap;
     const mapTex = useTexture ? (paintedDiffuse || diffuseMap || null) : null;
     const material = new THREE.MeshPhysicalMaterial({
       map: mapTex,
       color: new THREE.Color(surfaceColor),
-      roughness: phaseData.crownCap ? 0.18 : 0.45,
-      clearcoat: phaseData.crownCap ? 0.9 : 0.2,
-      clearcoatRoughness: phaseData.crownCap ? 0.08 : 0.45,
+      roughness: phaseData.crownCap ? 0.18 : 0.42,
+      clearcoat: phaseData.crownCap ? 0.9 : 0.35,
+      clearcoatRoughness: phaseData.crownCap ? 0.08 : 0.30,
       metalness: 0,
+      // Subtle enamel translucency — enough to let the inner pulpitis
+      // glow bleed through the crown but not so much that the tooth
+      // becomes ghostly. Disabled on full ceramic crown.
+      transmission: phaseData.crownCap ? 0 : 0.08,
+      ior: 1.55,
+      thickness: 0.5,
+      attenuationDistance: 4,
+      attenuationColor: new THREE.Color('#f5e6c0'),
       emissive: new THREE.Color(emissiveColor),
       emissiveIntensity,
     });
@@ -412,31 +430,140 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
     return () => material.dispose();
   }, [clone, diffuseMap, paintedDiffuse, surfaceColor, emissiveColor, emissiveIntensity, phaseData.crownCap]);
 
+  // ── In-tooth disease overlays: anatomically meaningful effects that
+  //    play through the existing OBJ as the disease progresses.
+  //
+  //  • pulpitis glow        — pulsing red volume centered roughly at the
+  //                           pulp chamber, visible through the slightly
+  //                           translucent crown so the patient sees WHY
+  //                           the tooth hurts.
+  //  • periapical lesion    — dim red bone-loss halo at the root apex
+  //                           when the abscess phase fires.
+  //  • gutta-percha fill    — orange-rust fill running through the root
+  //                           when the obturation phase fires.
+  //  • apical access pit    — small dark drilled pit on the chewing
+  //                           surface during endodontic access.
+  const dir = Math.sign(occlusalY) || 1;                   // +1 crown up, -1 crown down
+  const apexY = -occlusalY * 0.95;                         // root tip world-Y
+  const pulpY = occlusalY * 0.55;                          // approx. pulp chamber world-Y
+  const showPulp = phaseData.pulpEmissive > 0.2 || phaseData.caries > 0.85;
+  const showApical = phaseData.apicalLesion > 0.1;
+  const showGutta = phaseData.gutta > 0;
+
   return (
     <group>
       {/* The REAL tooth — full OBJ tree. Centering, scaling, and right-side
-          mirroring are baked into the clone's transform above, so we render
-          it without any further parent-group adjustments. */}
+          mirroring are baked into the clone's transform above. */}
       <primitive object={clone} />
 
-      {/* Cavity is etched directly into the tooth's diffuse texture above
-          (paintedDiffuse), so no separate mesh is rendered here — the
-          black bacteria + crack lines are part of the actual surface
-          color and follow the curvature exactly. */}
+      {/* Pulpitis glow — soft pulsing red sphere INSIDE the crown so it
+          shows through the slightly translucent enamel. Patients can
+          literally see the inflamed pulp. */}
+      {showPulp && bbSize && (
+        <PulpitisGlow
+          position={[0, pulpY, 0]}
+          radius={Math.min(bbSize[0], bbSize[2]) * 0.28}
+          intensity={Math.min(1.2, phaseData.pulpEmissive * 1.8 + (phaseData.caries > 0.85 ? 0.5 : 0))}
+        />
+      )}
+
+      {/* Periapical lesion — dim dark-red halo around the root apex. */}
+      {showApical && bbSize && (
+        <mesh position={[0, apexY - dir * Math.min(bbSize[1], 12) * 0.06, 0]}>
+          <sphereGeometry args={[Math.min(bbSize[0], bbSize[2]) * 0.42 * (0.6 + phaseData.apicalLesion * 0.6), 24, 16]} />
+          <meshStandardMaterial
+            color="#5a1208"
+            emissive="#3a0a04"
+            emissiveIntensity={0.5}
+            transparent
+            opacity={0.6 * Math.min(1, phaseData.apicalLesion * 1.3)}
+            depthWrite={false}
+            roughness={1}
+          />
+        </mesh>
+      )}
+
+      {/* Gutta-percha — warm rust-coloured cone running down through the
+          root. Rendered as a stretched cone aligned along the long axis. */}
+      {showGutta && bbSize && (
+        <mesh position={[0, apexY * 0.55, 0]} rotation={[dir > 0 ? Math.PI : 0, 0, 0]}>
+          <coneGeometry args={[Math.min(bbSize[0], bbSize[2]) * 0.085, Math.min(bbSize[1], 14) * 0.55, 18]} />
+          <meshStandardMaterial
+            color="#c9551c"
+            emissive="#5a1f08"
+            emissiveIntensity={0.25}
+            roughness={0.55}
+            metalness={0.05}
+          />
+        </mesh>
+      )}
+
+      {/* Endodontic access pit — small dark drilled cavity on the
+          chewing surface. Just a tiny darkened disc; not a 3D hole. */}
+      {phaseData.accessHole && bbSize && (
+        <mesh
+          position={[0, occlusalY * 0.99, 0]}
+          rotation={[dir > 0 ? -Math.PI / 2 : Math.PI / 2, 0, 0]}
+          renderOrder={3}
+        >
+          <circleGeometry args={[Math.min(bbSize[0], bbSize[2]) * 0.16, 32]} />
+          <meshStandardMaterial
+            color="#000"
+            side={THREE.DoubleSide}
+            depthWrite={false}
+            polygonOffset
+            polygonOffsetFactor={-4}
+            polygonOffsetUnits={-4}
+            roughness={1}
+          />
+        </mesh>
+      )}
     </group>
   );
 }
 
-/* Realistic dental-cavity texture, painted onto a canvas so we can
-   `multiply`-blend it into the tooth's diffuse map. Aiming for the look
-   of an actual occlusal lesion:
-     • irregular organic outline (not a clean circle)
-     • soft brown stained halo blending into the enamel
-     • dark brown body with a clearly-darker central pit
-     • a few subtle dark tracking lines following grooves (NOT a starburst)
-     • fine specks + a touch of moisture highlight for depth
+/* Soft pulsing red glow used to visualize inflamed pulp tissue inside
+   the crown. Pulses gently so the inflammation reads as "alive". */
+function PulpitisGlow({ position, radius, intensity }) {
+  const ref = useRef();
+  useFrame(({ clock }) => {
+    if (!ref.current) return;
+    const s = 1 + Math.sin(clock.elapsedTime * 2.2) * 0.06;
+    ref.current.scale.set(s, s, s);
+    if (ref.current.material) {
+      ref.current.material.emissiveIntensity = intensity * (0.85 + Math.sin(clock.elapsedTime * 2.2) * 0.15);
+    }
+  });
+  return (
+    <mesh ref={ref} position={position}>
+      <sphereGeometry args={[radius, 24, 18]} />
+      <meshStandardMaterial
+        color="#a01408"
+        emissive="#d41c08"
+        emissiveIntensity={intensity}
+        transparent
+        opacity={0.55}
+        depthWrite={false}
+        roughness={1}
+      />
+    </mesh>
+  );
+}
+
+/* Phase-aware caries texture, painted onto a canvas and `multiply`-blended
+   into the tooth's diffuse so the lesion is etched into the surface. The
+   appearance evolves through the actual clinical stages of a carious
+   lesion so a non-medical viewer can read what's happening:
+
+     enamel       → chalky-white demineralization spot, no dark center
+     dentin       → soft brown stain, faint dark center
+     deep_dentin  → pronounced brown lesion + dark cavitation pit
+     pulp/abscess → fully cavitated, infected dentin texture, breach to pulp
+
+   `severity` (0–1) keeps everything proportional inside each stage so the
+   animated phase scrubber still ramps smoothly between stages.
 ─────────────────────────────────────────────────────────────────────── */
-function makeCariesTexture(severity) {
+function makeCariesTexture(severity, stageHint /* 'enamel' | 'dentin' | 'deep' | 'pulp' */) {
   const SIZE = 512;
   const canvas = document.createElement('canvas');
   canvas.width = SIZE;
@@ -446,89 +573,185 @@ function makeCariesTexture(severity) {
   const cx = SIZE / 2, cy = SIZE / 2;
 
   const sev = Math.min(1, Math.max(0, severity));
+  // Derive stage from severity if not supplied
+  const stage = stageHint
+    || (sev <= 0.3 ? 'enamel'
+        : sev <= 0.55 ? 'dentin'
+        : sev <= 0.85 ? 'deep'
+        : 'pulp');
 
-  // ── 1. Irregular outline — overlap several brown radial gradients at
-  //     slightly offset positions so the lesion has an organic, blobby
-  //     edge instead of a perfect disc.
-  const blobCount = 6;
-  for (let i = 0; i < blobCount; i++) {
-    const ang = (i / blobCount) * Math.PI * 2 + Math.random() * 0.5;
-    const off = SIZE * (0.04 + Math.random() * 0.05);
-    const ox = cx + Math.cos(ang) * off;
-    const oy = cy + Math.sin(ang) * off;
-    const r = SIZE * (0.22 + Math.random() * 0.10);
-    const g = ctx.createRadialGradient(ox, oy, 4, ox, oy, r);
-    g.addColorStop(0,    `rgba(50,25,8,${0.55 + sev * 0.30})`);
-    g.addColorStop(0.55, `rgba(95,55,22,${0.40 + sev * 0.30})`);
-    g.addColorStop(1,    'rgba(140,90,45,0)');           // soft fade to nothing
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, SIZE, SIZE);
-  }
-
-  // ── 2. Inner darker brown body — concentrates color toward the center,
-  //     gives the lesion its main stained appearance.
-  const body = ctx.createRadialGradient(cx, cy, 0, cx, cy, SIZE * 0.26);
-  body.addColorStop(0,    `rgba(28,12,2,${0.85 + sev * 0.10})`);
-  body.addColorStop(0.50, `rgba(58,28,8,${0.65 + sev * 0.20})`);
-  body.addColorStop(1,    'rgba(85,45,18,0)');
-  ctx.fillStyle = body;
-  ctx.fillRect(0, 0, SIZE, SIZE);
-
-  // ── 3. A few subtle dark tracking lines following the natural fissure
-  //     grooves on the chewing surface. Real cavities track along grooves
-  //     rather than radiating in all directions — keep this small.
-  const trackCount = 2 + Math.round(sev * 2);
-  for (let i = 0; i < trackCount; i++) {
-    const angle = (i / trackCount) * Math.PI * 2 + Math.random() * 0.7;
-    const len = SIZE * (0.14 + sev * 0.12) * (0.6 + Math.random() * 0.5);
-    const segs = 12;
-    ctx.strokeStyle = `rgba(20,8,0,${0.55 + sev * 0.25})`;
-    ctx.lineWidth = 4 + Math.random() * (4 + sev * 3);
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.beginPath();
-    ctx.moveTo(cx, cy);
-    for (let s = 1; s <= segs; s++) {
-      const t = s / segs;
-      const r = len * t;
-      const a = angle + (Math.random() - 0.5) * 0.35;
-      const wobble = (Math.random() - 0.5) * 10 * (1 - t);
-      ctx.lineTo(cx + Math.cos(a) * r + wobble, cy + Math.sin(a) * r + wobble);
+  // Helper — paint a bumpy organic blob via overlapping radial gradients
+  // from offset centers. Returns nothing; draws onto ctx.
+  const paintBlob = (radius, layers, colorAt /* fn(t) → rgba */) => {
+    for (let i = 0; i < layers; i++) {
+      const ang = (i / layers) * Math.PI * 2 + Math.random() * 0.5;
+      const off = radius * (0.10 + Math.random() * 0.18);
+      const ox = cx + Math.cos(ang) * off;
+      const oy = cy + Math.sin(ang) * off;
+      const r = radius * (0.85 + Math.random() * 0.25);
+      const g = ctx.createRadialGradient(ox, oy, 4, ox, oy, r);
+      g.addColorStop(0,    colorAt(0));
+      g.addColorStop(0.55, colorAt(0.55));
+      g.addColorStop(1,    colorAt(1));
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, SIZE, SIZE);
     }
-    ctx.stroke();
+  };
+
+  // ── ENAMEL CARIES: white-spot lesion (chalky demineralization),
+  //    no dark center. This is the earliest visible decay.
+  if (stage === 'enamel') {
+    paintBlob(SIZE * 0.30, 5, (t) => {
+      const a = (1 - t) * (0.35 + sev * 0.30);
+      return `rgba(225,210,170,${a})`;             // off-white chalk against brown enamel
+    });
+    // Tiny darker flecks where demineralization is roughest
+    ctx.fillStyle = `rgba(110,75,30,${0.45 + sev * 0.2})`;
+    for (let i = 0; i < 22; i++) {
+      const r = SIZE * (0.04 + Math.random() * 0.20);
+      const a = Math.random() * Math.PI * 2;
+      ctx.beginPath();
+      ctx.arc(cx + Math.cos(a) * r, cy + Math.sin(a) * r, 0.6 + Math.random() * 2.0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    return finishTexture(canvas);
   }
 
-  // ── 4. Central dark pit — the bottom of the cavity, smaller and
-  //     darker so it reads as actual depth rather than a flat blot.
-  const pitR = SIZE * (0.10 + sev * 0.04);
-  const pit = ctx.createRadialGradient(cx, cy, 0, cx, cy, pitR);
-  pit.addColorStop(0,    'rgba(2,1,0,0.98)');
-  pit.addColorStop(0.55, 'rgba(15,6,2,0.85)');
-  pit.addColorStop(1,    'rgba(20,10,4,0)');
-  ctx.fillStyle = pit;
-  ctx.fillRect(0, 0, SIZE, SIZE);
-
-  // ── 5. Tiny specks + a faint moisture highlight at one edge so the
-  //     surface reads as wet/organic instead of a painted patch.
-  ctx.fillStyle = 'rgba(15,6,0,0.85)';
-  for (let i = 0; i < 38; i++) {
-    const r = SIZE * (0.04 + Math.random() * 0.26);
-    const a = Math.random() * Math.PI * 2;
-    ctx.beginPath();
-    ctx.arc(cx + Math.cos(a) * r, cy + Math.sin(a) * r, 0.7 + Math.random() * 2.4, 0, Math.PI * 2);
-    ctx.fill();
+  // ── DENTIN CARIES: soft brown stained area with a faint darker center.
+  //    The lesion has reached dentin, so colour deepens.
+  if (stage === 'dentin') {
+    paintBlob(SIZE * 0.32, 6, (t) => {
+      const a = (1 - t) * (0.55 + sev * 0.30);
+      return `rgba(70,40,15,${a})`;
+    });
+    // Faint inner dark spot — start of cavitation
+    const inner = ctx.createRadialGradient(cx, cy, 0, cx, cy, SIZE * 0.16);
+    inner.addColorStop(0,    `rgba(35,18,5,${0.55 + sev * 0.2})`);
+    inner.addColorStop(0.7,  'rgba(45,22,8,0.25)');
+    inner.addColorStop(1,    'rgba(45,22,8,0)');
+    ctx.fillStyle = inner;
+    ctx.fillRect(0, 0, SIZE, SIZE);
+    // Subtle groove tracking — 2 lines tops
+    paintGrooveTracks(ctx, cx, cy, SIZE, 2, sev, 'rgba(25,12,4,0.55)', 3);
+    paintSpecks(ctx, cx, cy, SIZE, 28, 'rgba(25,12,2,0.7)', 0.6, 2.2);
+    return finishTexture(canvas);
   }
-  // Faint specular streak from a single direction (light from upper-left)
-  const hi = ctx.createRadialGradient(cx - SIZE * 0.08, cy - SIZE * 0.06, 0, cx - SIZE * 0.08, cy - SIZE * 0.06, SIZE * 0.13);
-  hi.addColorStop(0, 'rgba(120,90,60,0.18)');
-  hi.addColorStop(1, 'rgba(120,90,60,0)');
-  ctx.fillStyle = hi;
-  ctx.fillRect(0, 0, SIZE, SIZE);
 
+  // ── DEEP DENTIN: pronounced brown lesion, clearly cavitated dark pit
+  //    in the center, infected-dentin patches around the rim.
+  if (stage === 'deep') {
+    paintBlob(SIZE * 0.36, 7, (t) => {
+      const a = (1 - t) * (0.7 + sev * 0.25);
+      return `rgba(50,25,8,${a})`;
+    });
+    // Inner darker zone — necrotic dentin
+    const necrotic = ctx.createRadialGradient(cx, cy, 0, cx, cy, SIZE * 0.24);
+    necrotic.addColorStop(0,    `rgba(20,8,2,${0.85})`);
+    necrotic.addColorStop(0.6,  'rgba(35,15,4,0.6)');
+    necrotic.addColorStop(1,    'rgba(45,22,8,0)');
+    ctx.fillStyle = necrotic;
+    ctx.fillRect(0, 0, SIZE, SIZE);
+    // Central cavitation pit
+    paintPit(ctx, cx, cy, SIZE * (0.13 + sev * 0.03));
+    // Yellow-brown infected-dentin texture: irregular flecks of slightly
+    // lighter brown-yellow scattered through the lesion
+    ctx.fillStyle = 'rgba(140,95,40,0.35)';
+    for (let i = 0; i < 24; i++) {
+      const r = SIZE * (0.06 + Math.random() * 0.22);
+      const a = Math.random() * Math.PI * 2;
+      ctx.beginPath();
+      ctx.arc(cx + Math.cos(a) * r, cy + Math.sin(a) * r, 1 + Math.random() * 3.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    paintGrooveTracks(ctx, cx, cy, SIZE, 3, sev, 'rgba(15,6,0,0.65)', 4);
+    paintSpecks(ctx, cx, cy, SIZE, 36, 'rgba(10,4,0,0.85)', 0.7, 2.6);
+    paintMoisture(ctx, cx, cy, SIZE);
+    return finishTexture(canvas);
+  }
+
+  // ── PULP / ABSCESS: full cavitation. Pulp is exposed — black hole
+  //    breaching into the chamber, faint red rim from inflamed pulp tissue.
+  paintBlob(SIZE * 0.38, 7, (t) => {
+    const a = (1 - t) * 0.92;
+    return `rgba(40,18,4,${a})`;
+  });
+  const necrotic = ctx.createRadialGradient(cx, cy, 0, cx, cy, SIZE * 0.28);
+  necrotic.addColorStop(0,    'rgba(8,3,0,0.95)');
+  necrotic.addColorStop(0.5,  'rgba(22,10,2,0.85)');
+  necrotic.addColorStop(1,    'rgba(45,22,8,0)');
+  ctx.fillStyle = necrotic;
+  ctx.fillRect(0, 0, SIZE, SIZE);
+  // Pulp chamber breach — deep black pit
+  paintPit(ctx, cx, cy, SIZE * 0.18);
+  // Faint dark-red rim around the pit suggesting inflamed pulp visible
+  // through the breach
+  const inflame = ctx.createRadialGradient(cx, cy, SIZE * 0.06, cx, cy, SIZE * 0.16);
+  inflame.addColorStop(0,    'rgba(0,0,0,0)');
+  inflame.addColorStop(0.7,  'rgba(110,15,5,0.45)');
+  inflame.addColorStop(1,    'rgba(110,15,5,0)');
+  ctx.fillStyle = inflame;
+  ctx.fillRect(0, 0, SIZE, SIZE);
+  paintGrooveTracks(ctx, cx, cy, SIZE, 4, sev, 'rgba(5,2,0,0.75)', 5);
+  paintSpecks(ctx, cx, cy, SIZE, 50, 'rgba(0,0,0,0.92)', 0.8, 3);
+  paintMoisture(ctx, cx, cy, SIZE);
+  return finishTexture(canvas);
+}
+
+function finishTexture(canvas) {
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.needsUpdate = true;
   return tex;
+}
+function paintGrooveTracks(ctx, cx, cy, SIZE, count, sev, color, baseW) {
+  ctx.strokeStyle = color;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  for (let i = 0; i < count; i++) {
+    const angle = (i / count) * Math.PI * 2 + Math.random() * 0.7;
+    const len = SIZE * (0.14 + sev * 0.16) * (0.6 + Math.random() * 0.5);
+    ctx.lineWidth = baseW + Math.random() * (4 + sev * 3);
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    const segs = 12;
+    for (let s = 1; s <= segs; s++) {
+      const t = s / segs;
+      const r = len * t;
+      const a = angle + (Math.random() - 0.5) * 0.35;
+      const wobble = (Math.random() - 0.5) * 12 * (1 - t);
+      ctx.lineTo(cx + Math.cos(a) * r + wobble, cy + Math.sin(a) * r + wobble);
+    }
+    ctx.stroke();
+  }
+}
+function paintPit(ctx, cx, cy, r) {
+  const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+  g.addColorStop(0,    'rgba(0,0,0,1)');
+  g.addColorStop(0.6,  'rgba(8,3,0,0.85)');
+  g.addColorStop(1,    'rgba(15,6,2,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+}
+function paintSpecks(ctx, cx, cy, SIZE, count, color, minR, maxR) {
+  ctx.fillStyle = color;
+  for (let i = 0; i < count; i++) {
+    const r = SIZE * (0.04 + Math.random() * 0.28);
+    const a = Math.random() * Math.PI * 2;
+    ctx.beginPath();
+    ctx.arc(cx + Math.cos(a) * r, cy + Math.sin(a) * r, minR + Math.random() * (maxR - minR), 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+function paintMoisture(ctx, cx, cy, SIZE) {
+  // Subtle wet-sheen highlight from upper-left
+  const hi = ctx.createRadialGradient(
+    cx - SIZE * 0.08, cy - SIZE * 0.06, 0,
+    cx - SIZE * 0.08, cy - SIZE * 0.06, SIZE * 0.13
+  );
+  hi.addColorStop(0, 'rgba(150,120,80,0.18)');
+  hi.addColorStop(1, 'rgba(150,120,80,0)');
+  ctx.fillStyle = hi;
+  ctx.fillRect(0, 0, SIZE, SIZE);
 }
 
 function ToothLoadingFallback() {
@@ -852,11 +1075,15 @@ export default function ToothProgressionPopup({ tooth, pathology, onClose }) {
           bit and widened the FOV slightly so the full crown + root render
           inside the canvas without clipping. */}
       <div style={{ height: 380, background: '#1c1c28' }}>
-        <Canvas camera={{ position: [0, 4, 32], fov: 36 }}>
-          <ambientLight intensity={1.1} />
-          <directionalLight position={[6, 12, 8]} intensity={1.6} />
+        <Canvas camera={{ position: [0, 4, 32], fov: 36 }} shadows gl={{ antialias: true, toneMapping: THREE.ACESFilmicToneMapping, toneMappingExposure: 1.05 }}>
+          {/* Cinematic medical lighting on the tooth: a strong key light
+              from upper-right, a cool fill from the opposite side, a warm
+              underbite bounce, and a soft cool rim for separation. */}
+          <ambientLight intensity={0.85} />
+          <directionalLight position={[6, 12, 8]} intensity={1.7} castShadow shadow-mapSize={[1024, 1024]} />
           <directionalLight position={[-6, 6, -5]} intensity={0.7} color="#cce0ff" />
           <directionalLight position={[0, -8, 10]} intensity={0.4} color="#ffd9b5" />
+          <directionalLight position={[0, 4, -14]} intensity={0.55} color="#e0eaff" />
           <Suspense fallback={<ToothLoadingFallback />}>
             {fileInfo ? (
               <RealToothModel
