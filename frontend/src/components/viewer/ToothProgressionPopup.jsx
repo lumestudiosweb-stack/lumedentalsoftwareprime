@@ -356,6 +356,62 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
     }
   }, [targetMesh, occlusalY]);
 
+  // ── Per-tooth GROOVE DETECTION ──
+  // Real cavities track along the natural occlusal grooves of THIS specific
+  // tooth — not a generic Y-pattern. We sample a sun-burst of rays from
+  // above the chewing surface, pick the deepest hit in each of N directions
+  // (those are the cusp-groove valleys), and return their UV coordinates.
+  // The painter then draws fissure-caries lines from the central pit UV
+  // out to each groove UV — so the cavity pattern matches the actual
+  // anatomical grooves of whichever molar/premolar is on screen.
+  const grooveUVs = useMemo(() => {
+    if (!targetMesh || !occlusalY || !bbSize) return [];
+    try {
+      const dir = Math.sign(occlusalY) || 1;
+      const raycaster = new THREE.Raycaster();
+      const sampleR = Math.min(bbSize[0], bbSize[2]) * 0.42; // chew-surface radius
+      const numDirs = 12;
+      const candidates = [];
+
+      // For each direction, sample several distances and keep the deepest
+      // (most groove-like) hit. Skip directions where no hit is found at
+      // all (off the tooth).
+      for (let i = 0; i < numDirs; i++) {
+        const ang = (i / numDirs) * Math.PI * 2;
+        let deepest = null;
+        for (let t = 0.30; t <= 1.0; t += 0.10) {
+          const x = Math.cos(ang) * sampleR * t;
+          const z = Math.sin(ang) * sampleR * t;
+          const origin = new THREE.Vector3(x, occlusalY + dir * 4, z);
+          const rd = new THREE.Vector3(0, -dir, 0);
+          raycaster.set(origin, rd);
+          const hits = raycaster.intersectObject(targetMesh, false);
+          if (hits.length && hits[0].uv) {
+            // "Depth" = how far below the cusp tops the hit landed
+            const depth = dir > 0 ? -hits[0].point.y : hits[0].point.y;
+            if (!deepest || depth > deepest.depth) {
+              deepest = {
+                depth,
+                uv: { x: hits[0].uv.x, y: hits[0].uv.y },
+                ang,
+              };
+            }
+          }
+        }
+        if (deepest) candidates.push(deepest);
+      }
+
+      if (candidates.length === 0) return [];
+
+      // Keep the 4-6 deepest as the real groove endpoints (real molars
+      // have 3-5 cusps so 4-6 grooves is anatomically right).
+      candidates.sort((a, b) => b.depth - a.depth);
+      return candidates.slice(0, 5).map((c) => c.uv);
+    } catch {
+      return [];
+    }
+  }, [targetMesh, occlusalY, bbSize]);
+
   // Build the painted diffuse: original diffuse + cavity texture stamped
   // at the occlusal UV. Re-bakes when severity bucket / diffuse / UV change.
   const paintedDiffuse = useMemo(() => {
@@ -373,24 +429,80 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
       // Original tooth texture
       ctx.drawImage(img, 0, 0, W, H);
 
-      // Stamp cavity at the occlusal UV (or center of the texture as a
-      // sane fallback if the raycast didn't return a UV — the chewing
-      // surface is usually unwrapped near the texture's center).
       const cariesImg = cariesTexture.image;
-      // Stamp covers the chewing surface's natural groove pattern. The
-      // painter inside the stamp is now slim fissure lines, so a wider
-      // stamp area is anatomically correct — the lines track along the
-      // whole cusp-groove network of the molar.
-      const stampSize = Math.min(W, H) * 0.34 * Math.min(1, 0.55 + phaseData.caries * 0.55);
       const ux = occlusalUV ? occlusalUV.x : 0.5;
       const uy = occlusalUV ? occlusalUV.y : 0.5;
       const cx = ux * W;
       const cy = (1 - uy) * H;
-      // First darken the underlying enamel via 'multiply' (preserves tooth
-      // color through the soft edges), then layer the dark center on top
-      // with 'source-over' so the actual cavity hole is unmistakeably
-      // dark even on a light-toned tooth texture. Two passes = real
-      // cavity that never looks like a faint stain.
+
+      // ── Draw fissure-caries lines from the central pit UV out to each
+      // detected groove UV. These lines follow THIS tooth's real cusp-
+      // groove anatomy (the groove UVs come from raycasting the actual
+      // mesh's chewing surface). Each line is rendered as a series of
+      // overlapping small radial gradients so it reads as organic
+      // decay tracking along a groove, not a stroked marker line.
+      if (grooveUVs && grooveUVs.length > 0) {
+        // Stage palette mirrors makeCariesTexture's line colors so the
+        // groove network and the central pit have a consistent look.
+        const sev = phaseData.caries;
+        const lineColor = sev <= 0.30 ? 'rgba(150,110,55,0.50)'
+                       : sev <= 0.60 ? 'rgba(60,30,10,0.92)'
+                       : sev <= 0.85 ? 'rgba(20,8,2,0.96)'
+                       :               'rgba(0,0,0,1.0)';
+        const faintColor = sev <= 0.30 ? 'rgba(150,110,55,0.20)'
+                        : sev <= 0.60 ? 'rgba(60,30,10,0.35)'
+                        : sev <= 0.85 ? 'rgba(20,8,2,0.40)'
+                        :               'rgba(5,2,0,0.45)';
+        const lineWidth = Math.min(W, H) * (0.010 + sev * 0.008);
+        const dotsPerLine = 22;
+
+        const paintDot = (px, py, rad, col, fa) => {
+          const g = ctx.createRadialGradient(px, py, 0, px, py, rad);
+          g.addColorStop(0,    col);
+          g.addColorStop(0.55, fa);
+          g.addColorStop(1,    'rgba(0,0,0,0)');
+          ctx.fillStyle = g;
+          ctx.fillRect(0, 0, W, H);
+        };
+
+        // Multiply pass — darkens enamel along the groove
+        ctx.globalCompositeOperation = 'multiply';
+        grooveUVs.forEach((g) => {
+          const gx = g.x * W;
+          const gy = (1 - g.y) * H;
+          for (let i = 0; i <= dotsPerLine; i++) {
+            const t = i / dotsPerLine;
+            const px = cx + (gx - cx) * t;
+            const py = cy + (gy - cy) * t;
+            // Lines taper slightly toward the end of the groove
+            const taper = 1 - t * 0.3;
+            const r = lineWidth * taper * (0.85 + Math.random() * 0.3);
+            paintDot(px, py, r, lineColor, faintColor);
+          }
+        });
+
+        // Source-over pass — drops a darker core into the same path so
+        // the groove is unmistakably dark even on light teeth.
+        ctx.globalCompositeOperation = 'source-over';
+        grooveUVs.forEach((g) => {
+          const gx = g.x * W;
+          const gy = (1 - g.y) * H;
+          for (let i = 0; i <= dotsPerLine; i++) {
+            const t = i / dotsPerLine;
+            const px = cx + (gx - cx) * t;
+            const py = cy + (gy - cy) * t;
+            const taper = 1 - t * 0.4;
+            const r = lineWidth * 0.62 * taper * (0.85 + Math.random() * 0.3);
+            paintDot(px, py, r, lineColor, faintColor);
+          }
+        });
+        ctx.globalCompositeOperation = 'source-over';
+      }
+
+      // ── Central cavitation stamp at the deepest pit. Small now that
+      // the fissures are drawn separately — this is just the central
+      // cavity hole where all the grooves meet.
+      const stampSize = Math.min(W, H) * 0.18 * Math.min(1, 0.55 + phaseData.caries * 0.55);
       ctx.globalCompositeOperation = 'multiply';
       ctx.drawImage(cariesImg, cx - stampSize / 2, cy - stampSize / 2, stampSize, stampSize);
       ctx.globalCompositeOperation = 'source-over';
@@ -407,7 +519,7 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
     } catch {
       return null;
     }
-  }, [diffuseMap, cariesTexture, occlusalUV, phaseData.crownCap, phaseData.caries]);
+  }, [diffuseMap, cariesTexture, occlusalUV, grooveUVs, phaseData.crownCap, phaseData.caries]);
   useEffect(() => () => { paintedDiffuse && paintedDiffuse.dispose(); }, [paintedDiffuse]);
 
   // Build a NORMAL MAP at diffuse-texture resolution: flat (128,128,255)
