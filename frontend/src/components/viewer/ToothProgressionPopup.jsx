@@ -541,19 +541,17 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
         />
       )}
 
-      {/* Periapical abscess — anatomical inflamed-tissue swelling at the
-          root apex. Built from several overlapping crimson blobs of
-          slightly different sizes/positions so the lesion has an
-          irregular swollen-tissue silhouette, not a sphere. Pulses
-          gently to read as living infected tissue. The whole assembly
-          is connected upward to the root by a visible "infection trail"
-          running through the canal — the patient sees the pathway
-          from the cavity → pulp → canal → apex → abscess. */}
+      {/* Periapical lesion — SMALL anatomical inflamed pocket at the
+          root apex (real periapical lesions are 2-8 mm, not the size
+          of the tooth). Irregular blobs of inflamed tissue plus small
+          dark "bone destruction" dots around it to communicate that
+          the bone around the apex is being eaten away — matches the
+          look of an actual radiograph / clinical illustration. */}
       {showApical && bbSize && (
         <Abscess
           apexY={apexY}
           dir={dir}
-          baseRadius={Math.min(bbSize[0], bbSize[2]) * 0.46 * (0.55 + phaseData.apicalLesion * 0.6)}
+          baseRadius={Math.min(bbSize[0], bbSize[2]) * 0.20 * (0.6 + phaseData.apicalLesion * 0.6)}
           intensity={Math.min(1, phaseData.apicalLesion * 1.3)}
           rootHeight={rootHalf}
         />
@@ -659,41 +657,50 @@ function Abscess({ apexY, dir, baseRadius, intensity, rootHeight }) {
     const p = 1 + Math.sin(clock.elapsedTime * 1.4) * 0.04;
     ref.current.scale.set(p, p, p);
   });
-  // Several offsets — irregular swelling silhouette
+  // Inflamed-tissue blobs — small and irregular like a real lesion
   const blobs = [
-    { o: [0,           -dir * baseRadius * 0.10, 0           ], s: 1.00, c: '#5a0d04', e: '#6e0e04' },
-    { o: [ baseRadius * 0.30, -dir * baseRadius * 0.20,  baseRadius * 0.10], s: 0.78, c: '#48090a', e: '#5a0a04' },
-    { o: [-baseRadius * 0.32, -dir * baseRadius * 0.16, -baseRadius * 0.08], s: 0.72, c: '#3a0608', e: '#4a0808' },
-    { o: [ baseRadius * 0.10, -dir * baseRadius * 0.32,  baseRadius * 0.18], s: 0.55, c: '#2c0608', e: '#3a0608' },
-    { o: [-baseRadius * 0.15, -dir * baseRadius * 0.36, -baseRadius * 0.16], s: 0.48, c: '#280406', e: '#360506' },
+    { o: [0,                    -dir * baseRadius * 0.10, 0                   ], s: 1.00, c: '#7a1408', e: '#8a1808' },
+    { o: [ baseRadius * 0.35,   -dir * baseRadius * 0.18,  baseRadius * 0.12  ], s: 0.78, c: '#5a0e08', e: '#6e1208' },
+    { o: [-baseRadius * 0.32,   -dir * baseRadius * 0.14, -baseRadius * 0.10  ], s: 0.72, c: '#4a0a08', e: '#5e0e08' },
+    { o: [ baseRadius * 0.10,   -dir * baseRadius * 0.30,  baseRadius * 0.16  ], s: 0.55, c: '#3a0608', e: '#4a0a08' },
   ];
-  const opacity = 0.55 + intensity * 0.30;
-  // The "infection trail" — a thin column from the apex up into the
-  // root canal. Connects visually to the canal infection cone above.
-  const trailLen = rootHeight * 0.45;
+  // Surrounding bone-destruction dots — small dark cavities in the bone
+  // that match the porous lesions in real periapical X-rays / textbook
+  // illustrations. Placed in a loose ring AROUND the apex, not inside.
+  const boneSpots = [
+    { o: [ baseRadius * 1.4,  -dir * baseRadius * 0.6,  baseRadius * 0.4 ], s: 0.28 },
+    { o: [-baseRadius * 1.5,  -dir * baseRadius * 0.4, -baseRadius * 0.2 ], s: 0.22 },
+    { o: [ baseRadius * 0.3,  -dir * baseRadius * 1.7,  baseRadius * 1.1 ], s: 0.32 },
+    { o: [-baseRadius * 0.6,  -dir * baseRadius * 1.6, -baseRadius * 1.0 ], s: 0.26 },
+    { o: [ baseRadius * 1.7,  -dir * baseRadius * 1.1, -baseRadius * 0.6 ], s: 0.24 },
+    { o: [-baseRadius * 1.6,  -dir * baseRadius * 1.2,  baseRadius * 0.7 ], s: 0.20 },
+  ];
+  const opacity = 0.7 + intensity * 0.25;
+  // Subtle infection trail — short, contained inside the apex region.
+  const trailLen = Math.min(rootHeight * 0.25, baseRadius * 2.4);
   return (
     <group ref={ref} position={[0, apexY, 0]}>
-      {/* Soft outer inflammation halo */}
+      {/* Soft outer inflammation halo — small + barely visible */}
       <mesh>
-        <sphereGeometry args={[baseRadius * 1.35, 24, 18]} />
+        <sphereGeometry args={[baseRadius * 1.25, 24, 18]} />
         <meshStandardMaterial
-          color="#3a0c08"
-          emissive="#3a0c08"
-          emissiveIntensity={0.18 * intensity}
+          color="#5a0c08"
+          emissive="#5a0c08"
+          emissiveIntensity={0.10 * intensity}
           transparent
-          opacity={0.18 * intensity}
+          opacity={0.20 * intensity}
           depthWrite={false}
           roughness={1}
         />
       </mesh>
-      {/* Irregular swelling — multiple offset blobs */}
+      {/* Inflamed tissue lobes */}
       {blobs.map((b, i) => (
         <mesh key={i} position={b.o}>
           <sphereGeometry args={[baseRadius * b.s, 22, 16]} />
           <meshStandardMaterial
             color={b.c}
             emissive={b.e}
-            emissiveIntensity={0.35 * intensity}
+            emissiveIntensity={0.30 * intensity}
             transparent
             opacity={opacity}
             depthWrite={false}
@@ -702,29 +709,29 @@ function Abscess({ apexY, dir, baseRadius, intensity, rootHeight }) {
           />
         </mesh>
       ))}
-      {/* Vascular gradient tint on top — subtle purple/red */}
-      <mesh position={[baseRadius * 0.05, -dir * baseRadius * 0.05, baseRadius * 0.05]}>
-        <sphereGeometry args={[baseRadius * 0.55, 18, 14]} />
-        <meshStandardMaterial
-          color="#1a020a"
-          emissive="#480814"
-          emissiveIntensity={0.5 * intensity}
-          transparent
-          opacity={0.55 * intensity}
-          depthWrite={false}
-          roughness={1}
-        />
-      </mesh>
-      {/* Infection trail rising from apex into root canal — visual bridge
-          showing the abscess is fed from the infected tooth above. */}
-      <mesh position={[0, dir * trailLen * 0.5, 0]} rotation={[dir > 0 ? Math.PI : 0, 0, 0]}>
-        <coneGeometry args={[baseRadius * 0.22, trailLen, 16]} />
+      {/* Bone-destruction dots — small dark pits in the surrounding bone
+          area, communicating that the infection is eating away the bone. */}
+      {boneSpots.map((b, i) => (
+        <mesh key={`bone-${i}`} position={b.o}>
+          <sphereGeometry args={[baseRadius * b.s, 12, 10]} />
+          <meshStandardMaterial
+            color="#1a0604"
+            roughness={1}
+            transparent
+            opacity={0.55 * intensity}
+            depthWrite={false}
+          />
+        </mesh>
+      ))}
+      {/* Short infection-bridge connecting apex → lesion */}
+      <mesh position={[0, dir * trailLen * 0.4, 0]} rotation={[dir > 0 ? Math.PI : 0, 0, 0]}>
+        <coneGeometry args={[baseRadius * 0.18, trailLen, 16]} />
         <meshStandardMaterial
           color="#3a0608"
           emissive="#5a0a08"
-          emissiveIntensity={0.45 * intensity}
+          emissiveIntensity={0.30 * intensity}
           transparent
-          opacity={0.5 * intensity}
+          opacity={0.40 * intensity}
           depthWrite={false}
           roughness={1}
         />

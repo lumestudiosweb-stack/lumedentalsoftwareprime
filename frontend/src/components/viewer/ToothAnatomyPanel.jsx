@@ -4,6 +4,21 @@ import { OrbitControls, Environment, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { toothName } from './ToothPicker';
 
+// Small dark pits scattered through the alveolar bone block to evoke the
+// trabecular / spongy structure visible in medical-textbook cross-sections.
+const BONE_PITS = [
+  { pos: [ 0.65, -2.10,  0.55], r: 0.10 },
+  { pos: [-0.70, -2.20,  0.45], r: 0.09 },
+  { pos: [ 0.40, -2.55, -0.50], r: 0.11 },
+  { pos: [-0.55, -2.65, -0.40], r: 0.08 },
+  { pos: [ 0.85, -2.45,  0.10], r: 0.07 },
+  { pos: [-0.90, -2.35, -0.05], r: 0.08 },
+  { pos: [ 0.10, -2.85,  0.70], r: 0.10 },
+  { pos: [-0.20, -2.90, -0.65], r: 0.09 },
+  { pos: [ 0.55, -2.80, -0.20], r: 0.07 },
+  { pos: [-0.45, -2.10, -0.55], r: 0.08 },
+];
+
 /**
  * ToothAnatomyPanel — side panel with a 3D cross-section of the picked
  * tooth. When pathology is set the camera automatically faces the
@@ -140,20 +155,31 @@ function ToothScene({ morphology, pathology, fdi }) {
 
   return (
     <group ref={groupRef}>
-      {/* Alveolar bone */}
+      {/* Alveolar bone — tan with subtle warmth, like real spongy bone */}
       <mesh position={[0, -2.4, 0]}>
         <cylinderGeometry args={[1.3, 1.4, 1.6, 32]} />
-        <meshStandardMaterial color="#e8d8b8" roughness={0.95} />
+        <meshStandardMaterial color="#dbc196" roughness={0.95} metalness={0} />
       </mesh>
-      {/* Gingiva */}
+      {/* Bone porosity — scatter small dark pits inside the bone block
+          to communicate the trabecular / spongy structure visible in
+          textbook cross-sections. */}
+      {BONE_PITS.map((p, i) => (
+        <mesh key={`pit-${i}`} position={p.pos}>
+          <sphereGeometry args={[p.r, 10, 8]} />
+          <meshStandardMaterial color="#7a5230" roughness={1} />
+        </mesh>
+      ))}
+      {/* Gingiva — keep the soft pink, slightly deeper red toward the
+          gum line for the natural gradient seen in real tissue. */}
       <mesh position={[0, -1.4, 0]}>
         <cylinderGeometry args={[1.15, 1.25, 0.7, 32]} />
-        <meshPhysicalMaterial color="#cc6677" roughness={0.7} clearcoat={0.3} clearcoatRoughness={0.5} />
+        <meshPhysicalMaterial color="#d6727f" roughness={0.65} clearcoat={0.35} clearcoatRoughness={0.5} />
       </mesh>
-      {/* PDL */}
+      {/* PDL — slightly warmer tone, matches periodontal ligament in
+          medical illustrations (not a cold grey). */}
       <mesh position={[0, -2.0, 0]}>
         <cylinderGeometry args={[1.02, 1.08, 1.3, 32]} />
-        <meshStandardMaterial color="#a0a098" roughness={0.9} transparent opacity={0.85} />
+        <meshStandardMaterial color="#c8a890" roughness={0.85} transparent opacity={0.78} />
       </mesh>
       <ToothAnatomy morphology={morphology} cutaway={cutaway} pathology={pathology} fdi={fdi} />
       <Html position={[0, 2.6, 0]} center distanceFactor={6}>
@@ -220,50 +246,54 @@ function ToothAnatomy({ morphology, cutaway, pathology, fdi }) {
         />
       </mesh>
 
-      {/* Dentin layer */}
+      {/* Dentin layer — warmer cream-yellow, like real dentin under the
+          enamel cap in medical illustrations. */}
       <mesh position={[0, morphology.crownY, 0]} scale={[0.82, 0.86, 0.82]}>
         {morphology.crownGeo}
         <meshStandardMaterial
-          color="#e6c98a"
-          roughness={0.7}
+          color="#e8c486"
+          roughness={0.72}
           clippingPlanes={clipPlanes}
           side={THREE.DoubleSide}
         />
       </mesh>
 
-      {/* Pulp chamber */}
+      {/* Pulp chamber — deeper crimson with a soft inner glow, much
+          closer to a real pulp's color than the previous bright red. */}
       <mesh position={[0, morphology.crownY - 0.1, 0]}>
         <sphereGeometry args={[0.32, 24, 16]} />
         <meshStandardMaterial
-          color="#cc4444"
-          emissive="#990000"
-          emissiveIntensity={0.3}
-          roughness={0.6}
+          color="#b21c1c"
+          emissive="#7a0e0e"
+          emissiveIntensity={0.32}
+          roughness={0.55}
           clippingPlanes={clipPlanes}
           side={THREE.DoubleSide}
         />
       </mesh>
 
-      {/* Root canals */}
+      {/* Root canals — match the pulp color so the entire neurovascular
+          tree reads as one continuous bundle. */}
       {morphology.canals.map((c, i) => (
         <mesh key={i} position={[c.x, c.y, c.z]} rotation={c.rot || [0, 0, 0]}>
           <cylinderGeometry args={[0.06, 0.04, morphology.rootLen, 12]} />
           <meshStandardMaterial
-            color="#bb3333"
-            emissive="#770000"
-            emissiveIntensity={0.2}
+            color="#a01c1c"
+            emissive="#5a0a0a"
+            emissiveIntensity={0.25}
             clippingPlanes={clipPlanes}
           />
         </mesh>
       ))}
 
-      {/* Roots */}
+      {/* Roots — pale cream-tan with a subtle warm tone (cementum on the
+          outside, dentin underneath). */}
       {morphology.roots.map((r, i) => (
         <mesh key={i} position={[r.x, r.y, r.z]}>
           <coneGeometry args={[r.topRadius, morphology.rootLen, 16, 1, false, 0, Math.PI * 2]} />
           <meshPhysicalMaterial
-            color="#d4b890"
-            roughness={0.85}
+            color="#dab98a"
+            roughness={0.82}
             metalness={0.02}
             clippingPlanes={clipPlanes}
             side={THREE.DoubleSide}
