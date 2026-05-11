@@ -377,7 +377,11 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
       // sane fallback if the raycast didn't return a UV — the chewing
       // surface is usually unwrapped near the texture's center).
       const cariesImg = cariesTexture.image;
-      const stampSize = Math.min(W, H) * 0.40 * Math.min(1, 0.6 + phaseData.caries * 0.55);
+      // Real clinical cavities are small — 2-4mm on a ~10mm tooth. Sizing
+      // the stamp at ~20% of the texture's smaller dimension lands the
+      // lesion at roughly that size after UV-mapping onto the chewing
+      // surface, instead of dominating the entire occlusal area.
+      const stampSize = Math.min(W, H) * 0.22 * Math.min(1, 0.55 + phaseData.caries * 0.55);
       const ux = occlusalUV ? occlusalUV.x : 0.5;
       const uy = occlusalUV ? occlusalUV.y : 0.5;
       const cx = ux * W;
@@ -831,7 +835,9 @@ function makeCariesTexture(severity, stageHint /* 'enamel' | 'dentin' | 'deep' |
   // ── Organic OUTER halo: 16 overlapping irregular radial gradients at
   //    randomized offsets give the lesion an amoeba-like outline that
   //    fades smoothly into the enamel — no clean circle anywhere.
-  const haloR = SIZE * 0.34 * (stage === 'pulp' ? 1.2 : stage === 'deep' ? 1.1 : 1.0);
+  //    Halo radius kept tight so the painted area stays the size of a
+  //    real lesion (not a stain covering the whole chewing surface).
+  const haloR = SIZE * 0.24 * (stage === 'pulp' ? 1.15 : stage === 'deep' ? 1.08 : 1.0);
   for (let i = 0; i < 16; i++) {
     const ang = (i / 16) * Math.PI * 2 + Math.random() * 0.5;
     const off = haloR * (0.10 + Math.random() * 0.30);
@@ -877,13 +883,15 @@ function makeCariesTexture(severity, stageHint /* 'enamel' | 'dentin' | 'deep' |
     ctx.fillRect(0, 0, SIZE, SIZE);
   }
 
-  // ── Pulp/abscess breach — faint dark-red rim around the pit suggesting
-  //    inflamed pulp visible through the cavitation.
+  // ── Pulp/abscess breach — very faint, narrow dark-red rim around the
+  //    pit suggesting inflamed pulp visible through the cavitation.
+  //    Kept subtle so it reads as a hint of red inside the dark hole, not
+  //    a bright red square dominating the lesion.
   if (stage === 'pulp') {
-    const g = ctx.createRadialGradient(cx, cy, pitR * 0.45, cx, cy, pitR * 1.5);
+    const g = ctx.createRadialGradient(cx, cy, pitR * 0.35, cx, cy, pitR * 0.95);
     g.addColorStop(0,   'rgba(0,0,0,0)');
-    g.addColorStop(0.45,'rgba(125,15,5,0.55)');
-    g.addColorStop(1,   'rgba(125,15,5,0)');
+    g.addColorStop(0.5, 'rgba(95,12,5,0.32)');
+    g.addColorStop(1,   'rgba(95,12,5,0)');
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, SIZE, SIZE);
   }
