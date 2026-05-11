@@ -377,11 +377,11 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
       // sane fallback if the raycast didn't return a UV — the chewing
       // surface is usually unwrapped near the texture's center).
       const cariesImg = cariesTexture.image;
-      // Real clinical cavities are small — 2-4mm on a ~10mm tooth. Sizing
-      // the stamp at ~20% of the texture's smaller dimension lands the
-      // lesion at roughly that size after UV-mapping onto the chewing
-      // surface, instead of dominating the entire occlusal area.
-      const stampSize = Math.min(W, H) * 0.22 * Math.min(1, 0.55 + phaseData.caries * 0.55);
+      // Stamp covers the chewing surface's natural groove pattern. The
+      // painter inside the stamp is now slim fissure lines, so a wider
+      // stamp area is anatomically correct — the lines track along the
+      // whole cusp-groove network of the molar.
+      const stampSize = Math.min(W, H) * 0.34 * Math.min(1, 0.55 + phaseData.caries * 0.55);
       const ux = occlusalUV ? occlusalUV.x : 0.5;
       const uy = occlusalUV ? occlusalUV.y : 0.5;
       const cx = ux * W;
@@ -777,16 +777,18 @@ function CanalInfection({ pulpY, apexY, dir, radius, severity }) {
   );
 }
 
-/* Photographic-style cavity diffuse texture. NO stroke lines, NO discrete
-   specks, NO marker-style scribbles — only smooth overlapping organic
-   gradients + pixel-level noise so the result reads as a real biological
-   lesion when `multiply`-blended into the tooth's diffuse map.
+/* Pit-and-fissure caries texture — matches the look of real occlusal
+   caries on a molar: dark BROWN-to-BLACK lines tracking along the
+   natural cusp grooves of the chewing surface, with the deepest
+   cavitation at the central pit. Painted via overlapping radial
+   gradients placed along anatomical groove paths (no marker-style
+   stroke lines).
 
    Stage progression mirrors actual clinical caries:
-     enamel    → chalky white-spot (early demineralization, no cavitation)
-     dentin    → soft brown stained patch with a faint darker core
-     deep      → pronounced brown lesion + clearly cavitated black core
-     pulp      → fully cavitated, breach to pulp with red inflamed rim
+     enamel    → faint amber discoloration along the fissures only
+     dentin    → dark brown fissure lines + small dark pit
+     deep      → black widened fissures + clear cavitation pit
+     pulp      → black breach at the central pit, faint red hint inside
 ─────────────────────────────────────────────────────────────────────── */
 function makeCariesTexture(severity, stageHint /* 'enamel' | 'dentin' | 'deep' | 'pulp' */) {
   const SIZE = 512;
@@ -804,91 +806,124 @@ function makeCariesTexture(severity, stageHint /* 'enamel' | 'dentin' | 'deep' |
         : sev <= 0.85 ? 'deep'
         : 'pulp');
 
-  // Stage-specific palette
-  let halo, mid, core, hasPit, pitR;
+  // Stage-specific palette and fissure parameters
+  let lineColor, pitColor, lineThicknessR, hasPit, pitR, hasStain;
   if (stage === 'enamel') {
-    halo = 'rgba(220,205,170,0.55)';   // chalky off-white
-    mid  = 'rgba(170,135,90,0.5)';
-    core = 'rgba(110,70,35,0.4)';
+    // Early demineralization — faint amber-brown along the fissures only,
+    // no dark cavitation pit yet.
+    lineColor = 'rgba(150,110,55,0.55)';
+    pitColor  = 'rgba(110,75,30,0.6)';
+    lineThicknessR = SIZE * 0.012;
     hasPit = false;
     pitR   = 0;
+    hasStain = false;
   } else if (stage === 'dentin') {
-    halo = 'rgba(110,65,28,0.65)';
-    mid  = 'rgba(55,28,10,0.85)';
-    core = 'rgba(20,8,2,0.95)';
+    lineColor = 'rgba(60,30,10,0.92)';
+    pitColor  = 'rgba(15,6,2,0.95)';
+    lineThicknessR = SIZE * 0.018;
     hasPit = true;
-    pitR   = SIZE * 0.10;
+    pitR   = SIZE * 0.06;
+    hasStain = true;
   } else if (stage === 'deep') {
-    halo = 'rgba(70,35,12,0.85)';
-    mid  = 'rgba(22,10,2,0.95)';
-    core = 'rgba(0,0,0,1)';
+    lineColor = 'rgba(20,8,2,0.96)';
+    pitColor  = 'rgba(0,0,0,1)';
+    lineThicknessR = SIZE * 0.026;
     hasPit = true;
-    pitR   = SIZE * 0.16;
-  } else { // pulp / abscess
-    halo = 'rgba(45,20,5,0.95)';
-    mid  = 'rgba(8,3,0,1)';
-    core = 'rgba(0,0,0,1)';
+    pitR   = SIZE * 0.085;
+    hasStain = true;
+  } else {
+    // pulp / abscess
+    lineColor = 'rgba(0,0,0,1)';
+    pitColor  = 'rgba(0,0,0,1)';
+    lineThicknessR = SIZE * 0.032;
     hasPit = true;
-    pitR   = SIZE * 0.20;
+    pitR   = SIZE * 0.11;
+    hasStain = true;
   }
 
-  // ── Organic OUTER halo: 16 overlapping irregular radial gradients at
-  //    randomized offsets give the lesion an amoeba-like outline that
-  //    fades smoothly into the enamel — no clean circle anywhere.
-  //    Halo radius kept tight so the painted area stays the size of a
-  //    real lesion (not a stain covering the whole chewing surface).
-  const haloR = SIZE * 0.24 * (stage === 'pulp' ? 1.15 : stage === 'deep' ? 1.08 : 1.0);
-  for (let i = 0; i < 16; i++) {
-    const ang = (i / 16) * Math.PI * 2 + Math.random() * 0.5;
-    const off = haloR * (0.10 + Math.random() * 0.30);
-    const ox = cx + Math.cos(ang) * off;
-    const oy = cy + Math.sin(ang) * off;
-    const r = haloR * (0.40 + Math.random() * 0.40);
-    const g = ctx.createRadialGradient(ox, oy, 1, ox, oy, r);
-    g.addColorStop(0,   halo);
-    g.addColorStop(0.5, mid);
+  // ── Fissure paths: the natural occlusal grooves of a molar.
+  //    Coordinates are texture-relative offsets from the center.
+  //    Central mesiodistal groove runs horizontally; the buccal/lingual
+  //    grooves branch off vertically. Slight perpendicular jitter on each
+  //    waypoint so the lines aren't perfectly straight (real fissures
+  //    wander). Returns array-of-arrays of (x,y) waypoints in texture px.
+  const groove = (pts) => pts.map(([x, y]) => [
+    cx + x * SIZE + (Math.random() - 0.5) * SIZE * 0.012,
+    cy + y * SIZE + (Math.random() - 0.5) * SIZE * 0.012,
+  ]);
+  const grooves = [
+    // Central mesiodistal groove — longest, runs M→D through the center
+    groove([[-0.22, -0.01], [-0.13, 0.01], [-0.05, 0], [0.04, -0.01], [0.13, 0.01], [0.22, 0]]),
+    // Buccal groove — branches from center toward buccal side
+    groove([[0, 0], [0.02, -0.06], [-0.01, -0.12], [0.01, -0.18]]),
+    // Lingual groove — branches toward lingual side
+    groove([[0, 0], [-0.01, 0.06], [0.02, 0.13], [-0.02, 0.19]]),
+  ];
+
+  // ── Paint each fissure: overlap many small radial gradients along
+  //    each waypoint path, plus interpolated points between, so the
+  //    line reads as organic decay, NOT as a stroked path. Width varies
+  //    slightly per dot for irregular thickness.
+  const drawGradientDot = (px, py, radius, color, faint) => {
+    const g = ctx.createRadialGradient(px, py, 0, px, py, radius);
+    g.addColorStop(0,   color);
+    g.addColorStop(0.55, faint);
     g.addColorStop(1,   'rgba(0,0,0,0)');
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, SIZE, SIZE);
+  };
+  // Convert lineColor into a faint version (half alpha) for the inner stop
+  const faint = lineColor.replace(/[\d.]+\)\s*$/, (m) => (parseFloat(m) * 0.35) + ')');
+  grooves.forEach((g) => {
+    for (let i = 0; i < g.length - 1; i++) {
+      const [x1, y1] = g[i];
+      const [x2, y2] = g[i + 1];
+      // Place ~6 overlapping dots between waypoints
+      for (let t = 0; t <= 1; t += 1 / 6) {
+        const px = x1 + (x2 - x1) * t;
+        const py = y1 + (y2 - y1) * t;
+        const r = lineThicknessR * (0.85 + Math.random() * 0.4);
+        drawGradientDot(px, py, r, lineColor, faint);
+      }
+    }
+  });
+
+  // ── Subtle stain halo around the fissure pattern (dentin+ stages only).
+  //    Adds the soft brownish discoloration seen around real caries
+  //    without overwhelming the lesion or covering the whole tooth.
+  if (hasStain) {
+    for (let i = 0; i < 6; i++) {
+      const ang = (i / 6) * Math.PI * 2 + Math.random() * 0.4;
+      const off = SIZE * (0.04 + Math.random() * 0.06);
+      const ox = cx + Math.cos(ang) * off;
+      const oy = cy + Math.sin(ang) * off;
+      const r = SIZE * (0.10 + Math.random() * 0.05);
+      const g = ctx.createRadialGradient(ox, oy, 1, ox, oy, r);
+      g.addColorStop(0,   'rgba(80,45,15,0.30)');
+      g.addColorStop(0.55,'rgba(60,30,8,0.15)');
+      g.addColorStop(1,   'rgba(0,0,0,0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, SIZE, SIZE);
+    }
   }
 
-  // ── Inner darker zone (necrotic dentin / cavitated tissue). Same
-  //    multi-blob technique so the inner border is irregular too.
-  const midR = haloR * 0.55;
-  for (let i = 0; i < 10; i++) {
-    const ang = Math.random() * Math.PI * 2;
-    const off = midR * Math.random() * 0.35;
-    const ox = cx + Math.cos(ang) * off;
-    const oy = cy + Math.sin(ang) * off;
-    const r = midR * (0.50 + Math.random() * 0.45);
-    const g = ctx.createRadialGradient(ox, oy, 1, ox, oy, r);
-    g.addColorStop(0,   mid);
-    g.addColorStop(0.7, core);
-    g.addColorStop(1,   'rgba(0,0,0,0)');
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, SIZE, SIZE);
-  }
-
-  // ── Central cavitation pit (dentin / deep / pulp only). The actual
-  //    "hole" punched through the enamel — fully opaque at center so the
-  //    `source-over` second pass guarantees a visibly black cavity.
+  // ── Central cavitation pit at the groove intersection — the deepest
+  //    point of the lesion. Fully opaque at center so the source-over
+  //    second pass guarantees a visibly dark pit.
   if (hasPit) {
     const r = pitR * (0.95 + sev * 0.45);
     const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
-    g.addColorStop(0,   'rgba(0,0,0,1)');
-    g.addColorStop(0.4, 'rgba(2,1,0,0.98)');
-    g.addColorStop(0.8, 'rgba(10,4,1,0.55)');
-    g.addColorStop(1,   'rgba(15,6,2,0)');
+    g.addColorStop(0,    pitColor);
+    g.addColorStop(0.45, 'rgba(2,1,0,0.95)');
+    g.addColorStop(0.85, 'rgba(15,6,2,0.35)');
+    g.addColorStop(1,    'rgba(15,6,2,0)');
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, SIZE, SIZE);
   }
 
-  // ── Pulp/abscess breach — very faint, narrow dark-red rim around the
-  //    pit suggesting inflamed pulp visible through the cavitation.
-  //    Kept subtle so it reads as a hint of red inside the dark hole, not
-  //    a bright red square dominating the lesion.
+  // ── Pulp breach — faint hint of red visible inside the black pit.
   if (stage === 'pulp') {
-    const g = ctx.createRadialGradient(cx, cy, pitR * 0.35, cx, cy, pitR * 0.95);
+    const g = ctx.createRadialGradient(cx, cy, pitR * 0.30, cx, cy, pitR * 0.80);
     g.addColorStop(0,   'rgba(0,0,0,0)');
     g.addColorStop(0.5, 'rgba(95,12,5,0.32)');
     g.addColorStop(1,   'rgba(95,12,5,0)');
