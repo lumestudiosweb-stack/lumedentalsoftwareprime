@@ -5,6 +5,7 @@ import DentalViewer from './DentalViewer';
 import ToothPicker from './ToothPicker';
 import PathologyPicker from './PathologyPicker';
 import ToothAnatomyPanel from './ToothAnatomyPanel';
+import XRayToggle from './XRayToggle';
 import { ChevronLeft, ChevronRight, Loader2, ArrowLeft, Play, Pause, Upload, Image as ImageIcon, Activity, Layers } from 'lucide-react';
 
 export default function SimulationView() {
@@ -24,6 +25,8 @@ export default function SimulationView() {
   const [sideTab, setSideTab] = useState('timeline'); // 'timeline' | 'clinical'
   const [pickedTooth, setPickedTooth] = useState(null);
   const [pathology, setPathology] = useState({});
+  // X-Ray toggle — modular addition; only the scan-mesh material reacts.
+  const [xRayMode, setXRayMode] = useState(false);
   const fileInputRef = useRef(null);
   const textureInputRef = useRef(null);
 
@@ -191,7 +194,7 @@ export default function SimulationView() {
       {/* 3D Viewer + Metrics Panel */}
       <div className="flex-1 flex relative">
         <div className="flex-1 bg-black">
-          <DentalViewer simulation={simulation} activeStateIndex={activeState} scanUrl={scanUrl} scanFormat={scanFormat} textureUrl={textureUrl} clinicalPathology={pathology} pickedTooth={pickedTooth} />
+          <DentalViewer simulation={simulation} activeStateIndex={activeState} scanUrl={scanUrl} scanFormat={scanFormat} textureUrl={textureUrl} clinicalPathology={pathology} pickedTooth={pickedTooth} xRayMode={xRayMode} />
         </div>
 
         {/* Side Panel */}
@@ -285,6 +288,10 @@ export default function SimulationView() {
 
             {sideTab === 'clinical' && (
               <div className="p-3 space-y-3">
+                <XRayToggle
+                  active={xRayMode}
+                  onToggle={() => setXRayMode((v) => !v)}
+                />
                 <ToothPicker
                   value={pickedTooth}
                   onPick={(fdi) => { setPickedTooth(fdi); setPathology({}); }}

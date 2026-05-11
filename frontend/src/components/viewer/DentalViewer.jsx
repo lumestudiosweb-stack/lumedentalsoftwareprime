@@ -9,6 +9,7 @@ import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { DecalGeometry } from 'three/examples/jsm/geometries/DecalGeometry.js';
 import ToothOverlay, { RealisticTooth } from './ToothOverlay';
 import ToothProgressionPopup from './ToothProgressionPopup';
+import { useXRayMaterial } from './useXRayMaterial';
 
 /* ── Same PLY UV extractor as ScanPreview3D ─────────────────── */
 async function extractPLYExtras(url) {
@@ -86,7 +87,7 @@ function normalizeVertexColors(geo) {
  * Camera positioned for a front-facing clinical view looking slightly
  * down into the mouth — like a patient in the chair.
  */
-export default function DentalViewer({ scanUrl, scanFormat, simulation, activeStateIndex, textureUrl, clinicalPathology, pickedTooth }) {
+export default function DentalViewer({ scanUrl, scanFormat, simulation, activeStateIndex, textureUrl, clinicalPathology, pickedTooth, xRayMode = false }) {
   const [popupHidden, setPopupHidden] = useState(false);
 
   // ── Derive a pathology context from EITHER picker (manual) or
@@ -148,7 +149,7 @@ export default function DentalViewer({ scanUrl, scanFormat, simulation, activeSt
             // scan stays clean during simulation playback. The popup (outside
             // Canvas) handles the disease-progression visualization via
             // effectivePathology which also covers simulation timeline states.
-            <TreatmentJourney url={scanUrl} format={scanFormat} textureUrl={textureUrl} simulation={simulation} activeStateIndex={activeStateIndex} clinicalPathology={clinicalPathology} pickedTooth={pickedTooth} />
+            <TreatmentJourney url={scanUrl} format={scanFormat} textureUrl={textureUrl} simulation={simulation} activeStateIndex={activeStateIndex} clinicalPathology={clinicalPathology} pickedTooth={pickedTooth} xRayMode={xRayMode} />
           ) : (
             <PlaceholderArch simulation={simulation} activeStateIndex={activeStateIndex} clinicalPathology={effectivePathology} pickedTooth={effectiveTooth} />
           )}
@@ -554,7 +555,7 @@ function makeStainTexture(kind, stage, treatment) {
   return tex;
 }
 
-function TreatmentJourney({ url, format, textureUrl, simulation, activeStateIndex, clinicalPathology, pickedTooth }) {
+function TreatmentJourney({ url, format, textureUrl, simulation, activeStateIndex, clinicalPathology, pickedTooth, xRayMode = false }) {
   const meshRef = useRef();
   const [scanMesh, setScanMesh] = useState(null);
   const [geometry, setGeometry] = useState(null);
@@ -562,6 +563,10 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
   const [hasUVs, setHasUVs] = useState(false);
   const [hasVertexColors, setHasVertexColors] = useState(false);
   const [texture, setTexture] = useState(null);
+  // Keep a stable reference to the original PBR material so we can swap
+  // back when X-Ray is turned off without rebuilding it from scratch.
+  const baseMatRef = useRef(null);
+  const xRayMat = useXRayMaterial();
 
   // ── Load mesh (STL / PLY / OBJ) ─────────────────────────────
   useEffect(() => {
@@ -780,14 +785,39 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
   // ── Texture imperatively applied ──
   useEffect(() => {
     if (!meshRef.current) return;
-    const mat = meshRef.current.material;
-    mat.map = texture || null;
-    mat.vertexColors = !texture && hasVertexColors;
-    mat.color.set('#ffffff');
-    mat.emissive.set('#000000');
-    mat.emissiveIntensity = 0;
-    mat.needsUpdate = true;
-  }, [texture, hasVertexColors]);
+    // If we're currently showing X-Ray, the live material is the shader —
+    // update the SAVED physical material instead so the textures are
+    // there when the user toggles back.
+    const target = (xRayMode && baseMatRef.current) ? baseMatRef.current : meshRef.current.material;
+    if (!target || target === xRayMat) return;
+    target.map = texture || null;
+    target.vertexColors = !texture && hasVertexColors;
+    if (target.color)    target.color.set('#ffffff');
+    if (target.emissive) target.emissive.set('#000000');
+    if ('emissiveIntensity' in target) target.emissiveIntensity = 0;
+    target.needsUpdate = true;
+  }, [texture, hasVertexColors, xRayMode, xRayMat]);
+
+  // ── X-Ray material swap ──
+  // Modular interaction with the existing meshRef. When X-Ray is on we
+  // swap the mesh's material to the ShaderMaterial returned by the hook;
+  // when off we restore the original PhysicalMaterial. This does NOT
+  // touch the main simulation logic, the decal pipeline, or the marker
+  // / overlay state — only the scan mesh's surface material.
+  useEffect(() => {
+    if (!meshRef.current) return;
+    const m = meshRef.current;
+    // First time we observe a non-shader material, snapshot it as the base.
+    if (!baseMatRef.current && m.material && m.material !== xRayMat) {
+      baseMatRef.current = m.material;
+    }
+    if (xRayMode) {
+      m.material = xRayMat;
+    } else if (baseMatRef.current) {
+      m.material = baseMatRef.current;
+      baseMatRef.current.needsUpdate = true;
+    }
+  }, [xRayMode, xRayMat, scanMesh]);
 
   useFrameImpl(() => {});
 
@@ -875,6 +905,7 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
           stage={effectiveStage || (decalKind === 'caries' ? 'dentin' : null)}
           treatment={effectiveTreatment}
           pulsing={isPulsing}
+          xRayMode={xRayMode}
         />
       )}
 
@@ -933,7 +964,7 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
      • rct          → matte rust
      • extraction   → matte dark red socket
 ─────────────────────────────────────────────────────────────────────── */
-function PathologyDecal({ mesh, position, normal, size, kind, stage, treatment, pulsing }) {
+function PathologyDecal({ mesh, position, normal, size, kind, stage, treatment, pulsing, xRayMode = false }) {
   const matRef = useRef();
 
   // Procedural stain texture — re-baked when the diagnosis changes
@@ -983,18 +1014,25 @@ function PathologyDecal({ mesh, position, normal, size, kind, stage, treatment, 
   const isGlossy  = kind === 'metal_crown' || kind === 'all_ceramic_crown' || kind === 'pfm_crown';
 
   return (
-    <mesh geometry={decalGeometry} renderOrder={2}>
+    <mesh geometry={decalGeometry} renderOrder={xRayMode ? 100 : 2}>
       <meshStandardMaterial
         ref={matRef}
         map={texture}
+        // In X-Ray mode the scan goes semi-transparent; we want the
+        // decay marker to stay visible THROUGH the translucent surface,
+        // so we disable depthTest and boost emissive (so the lesion
+        // "glows" through the X-Ray view).
         transparent
-        depthTest
+        depthTest={!xRayMode}
         depthWrite={false}
         polygonOffset
         polygonOffsetFactor={-4}
         polygonOffsetUnits={-4}
         roughness={isCaries ? 0.95 : isGlossy ? 0.18 : isMetal ? 0.35 : 0.45}
         metalness={isMetal ? 0.85 : 0}
+        emissive={isCaries ? '#ff2a14' : '#000000'}
+        emissiveIntensity={xRayMode ? (isCaries ? 0.55 : 0.15) : 0}
+        emissiveMap={xRayMode ? texture : null}
         side={THREE.FrontSide}
       />
     </mesh>
