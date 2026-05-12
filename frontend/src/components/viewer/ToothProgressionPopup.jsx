@@ -463,22 +463,15 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
     const mapTex = useTexture ? (paintedDiffuse || diffuseMap || null) : null;
     const material = new THREE.MeshPhysicalMaterial({
       map: mapTex,
-      // Cavity normal map — adds 3D crater depth inside the lesion area
-      // only. Outside the cavity the texture is flat-blue (no effect).
       normalMap: phaseData.crownCap ? null : (paintedNormal || null),
       normalScale: new THREE.Vector2(1.0, 1.0),
       color: new THREE.Color(surfaceColor),
-      // Ceramic restoration = very smooth, high clearcoat. Natural enamel
-      // = slight surface roughness with a thin clearcoat for wet sheen.
       roughness: phaseData.crownCap ? 0.12 : 0.42,
-      clearcoat: phaseData.crownCap ? 1.0 : 0.35,
-      clearcoatRoughness: phaseData.crownCap ? 0.05 : 0.30,
-      reflectivity: phaseData.crownCap ? 0.65 : 0.5,
+      clearcoat: phaseData.crownCap ? 1.0 : 0.45,
+      clearcoatRoughness: phaseData.crownCap ? 0.05 : 0.22,
+      reflectivity: phaseData.crownCap ? 0.65 : 0.55,
       metalness: 0,
-      // Subtle enamel translucency — enough to let the inner pulpitis
-      // glow bleed through the crown but not so much that the tooth
-      // becomes ghostly. Disabled on full ceramic crown.
-      transmission: phaseData.crownCap ? 0 : 0.08,
+      transmission: phaseData.crownCap ? 0 : 0.10,
       ior: 1.55,
       thickness: 0.5,
       attenuationDistance: 4,
@@ -486,6 +479,61 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
       emissive: new THREE.Color(emissiveColor),
       emissiveIntensity,
     });
+
+    // ── Custom GLSL shader injection ──
+    // Extends MeshPhysicalMaterial via onBeforeCompile so we keep all of
+    // Three.js's PBR + IBL lighting AND add three medically-meaningful
+    // optical effects on top:
+    //   1. Subsurface scattering — soft red light bleeds through the
+    //      thinner edges of the enamel at grazing angles (mimics blood/
+    //      pulp showing through translucent enamel — the "tooth glow"
+    //      you see in close-up dental photography).
+    //   2. Rim lighting — bright silhouette halo so the tooth reads as
+    //      3D against the dark popup backdrop without flat patches.
+    //   3. Wet specular boost — sharpens the highlight on cusps so the
+    //      tooth looks like an actual moist enamel surface.
+    // Disabled on the ceramic-crown phase (transmission already 0).
+    if (!phaseData.crownCap) {
+      const uSSSColor    = { value: new THREE.Color('#d04848') };
+      const uSSSStrength = { value: 0.22 };
+      const uRimColor    = { value: new THREE.Color('#fff0dc') };
+      const uRimStrength = { value: 0.32 };
+      material.userData.shaderUniforms = { uSSSColor, uSSSStrength, uRimColor, uRimStrength };
+      material.onBeforeCompile = (shader) => {
+        shader.uniforms.uSSSColor    = uSSSColor;
+        shader.uniforms.uSSSStrength = uSSSStrength;
+        shader.uniforms.uRimColor    = uRimColor;
+        shader.uniforms.uRimStrength = uRimStrength;
+
+        // Add uniform declarations near the top of the fragment shader.
+        shader.fragmentShader = shader.fragmentShader.replace(
+          '#include <common>',
+          `#include <common>
+           uniform vec3  uSSSColor;
+           uniform float uSSSStrength;
+           uniform vec3  uRimColor;
+           uniform float uRimStrength;`
+        );
+
+        // Inject SSS + rim into the FINAL fragment color, after Three.js's
+        // PBR lighting has computed the diffuse + specular contributions.
+        // vNormal and vViewPosition are standard varyings provided by
+        // MeshPhysicalMaterial — we just consume them.
+        shader.fragmentShader = shader.fragmentShader.replace(
+          '#include <dithering_fragment>',
+          `#include <dithering_fragment>
+           vec3 _viewDir = normalize(vViewPosition);
+           float _ndotv = clamp(abs(dot(normalize(vNormal), _viewDir)), 0.0, 1.0);
+           // 1. Subsurface scattering — red glow on edge-on areas
+           float _sss = pow(1.0 - _ndotv, 1.8) * uSSSStrength;
+           gl_FragColor.rgb = mix(gl_FragColor.rgb, gl_FragColor.rgb + uSSSColor * _sss, gl_FragColor.a);
+           // 2. Rim lighting — bright silhouette halo
+           float _rim = pow(1.0 - _ndotv, 3.6) * uRimStrength;
+           gl_FragColor.rgb += uRimColor * _rim;`
+        );
+      };
+    }
+
     clone.traverse((child) => {
       if (child.isMesh) {
         child.material = material;
