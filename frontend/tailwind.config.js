@@ -8,13 +8,13 @@ export default {
         display: ['Space Grotesk', 'Inter', 'system-ui', 'sans-serif'],
       },
       colors: {
-        // Deep blue-black surfaces (Dentaverse style — was zinc-greys)
+        // Original LumeDental zinc-grey surfaces
         surface: {
-          0: '#070a14',
-          1: '#0c111d',
-          2: '#121826',
-          3: '#1a2233',
-          4: '#252e44',
+          0: '#09090b',
+          1: '#111113',
+          2: '#18181b',
+          3: '#1f1f23',
+          4: '#27272a',
         },
         // Existing lume blue kept for backward compat
         lume: {

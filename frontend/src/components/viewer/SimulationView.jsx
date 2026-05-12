@@ -1,41 +1,36 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { useParams, Link } from 'react-router-dom';
 import { simulationAPI, patientAPI, scanAPI } from '../../services/mockApi';
 import DentalViewer from './DentalViewer';
+import ToothPicker from './ToothPicker';
+import PathologyPicker from './PathologyPicker';
+import ToothAnatomyPanel from './ToothAnatomyPanel';
 import XRayToggle from './XRayToggle';
-import DiagnosisPanel from './DiagnosisPanel';
-import BottomStrips from './BottomStrips';
 import ViewerToolbar from './ViewerToolbar';
-import CaseTopBar from './CaseTopBar';
-import CasePatientSidebar from './CasePatientSidebar';
-import CaseHeader from './CaseHeader';
-import { Loader2, Maximize2, ChevronLeft, ChevronRight, Play, Pause, Image as ImageIcon, Info } from 'lucide-react';
+import DiagnosisTabContent from './DiagnosisTabContent';
+import {
+  ChevronLeft, ChevronRight, Loader2, ArrowLeft, Play, Pause,
+  Upload, Image as ImageIcon, Activity, Layers, Stethoscope, Maximize2, Info,
+} from 'lucide-react';
 
 /* ──────────────────────────────────────────────────────────────────────
-   Case workspace — the main 3D simulation page, restructured to the
-   Dentaverse three-column layout:
+   SimulationView — original LumeDental two-column layout (header bar
+   on top, big 3D viewer + right side panel, timeline scrubber on the
+   bottom). New features layered IN without changing the overall
+   structure:
 
-     [ CaseTopBar (search + Import Scan + New Case + user)              ]
-     ┌───────────────┬─────────────────────────────────────┬───────────┐
-     │ Patient list  │  Case header + viewer (DentalViewer) │ Diagnosis │
-     │ sidebar       │  ViewerToolbar overlaid              │ Panel     │
-     │               │  Tooth-row + 3D toggle               │           │
-     ├───────────────┴─────────────────────────────────────┴───────────┤
-     │ Bottom strips: Disease Progression + Treatment Simulation       │
-     └─────────────────────────────────────────────────────────────────┘
-
-   Existing functionality preserved verbatim:
-     • Three.js mesh loading (STL/PLY/OBJ)
-     • JPEG texture drop-to-apply
-     • X-Ray toggle hook
-     • Auto-play + timeline scrubber
-     • Tooth picker + pathology picker still available via the right
-       panel's stage / treatment selection
+     • ViewerToolbar (Rotate/Pan/Zoom/Section/Transparency/Measure/
+       Annotation) floats over the 3D viewer's left edge
+     • AI Detection HUD pill in the top-right of the viewer (also
+       toggles X-Ray mode)
+     • Side panel gets a third tab: Diagnosis — holds the 5-stage
+       disease progression strip, treatment options grid, and
+       Show Treatment Simulation CTA
 ─────────────────────────────────────────────────────────────────────── */
 
-// Mapping between the right-panel stage IDs (visual) and the engine's
-// clinical-pathology depth / kind values (drives the existing DentalViewer
-// decals and the ToothProgressionPopup).
+// Stage IDs from the right-panel UI map onto the engine's clinical-
+// pathology shape so the DentalViewer decals + ToothProgressionPopup
+// react to right-panel selections without any logic refactor.
 const STAGE_TO_PATHOLOGY = {
   enamel:   { kind: 'caries', depth: 'enamel' },
   dentin:   { kind: 'caries', depth: 'dentin' },
@@ -44,110 +39,77 @@ const STAGE_TO_PATHOLOGY = {
   loss:     { kind: 'extraction' },
 };
 const TREATMENT_TO_PATHOLOGY = {
-  filling:    { kind: 'composite_filling',  depth: 'dentin' },
-  inlay:      { kind: 'inlay',              depth: 'dentin' },
-  crown:      { kind: 'all_ceramic_crown' },
-  rct:        { kind: 'rct',                depth: 'pulp_exposure' },
-  extraction: { kind: 'extraction' },
-  implant:    { kind: 'all_ceramic_crown' },     // implant crown looks similar
-  veneer:     { kind: 'veneer',             depth: 'enamel' },
+  filling:      { kind: 'composite_filling', depth: 'dentin' },
+  inlay:        { kind: 'inlay',             depth: 'dentin' },
+  crown:        { kind: 'all_ceramic_crown' },
+  rct:          { kind: 'rct',               depth: 'pulp_exposure' },
+  extraction:   { kind: 'extraction' },
+  implant:      { kind: 'all_ceramic_crown' },
+  veneer:       { kind: 'veneer',            depth: 'enamel' },
   no_treatment: null,
-};
-
-const TREATMENT_LABEL = {
-  filling: 'Filling',
-  inlay: 'Inlay / Onlay',
-  crown: 'Crown',
-  rct: 'Root Canal + Crown',
-  extraction: 'Extraction',
-  implant: 'Implant',
-  veneer: 'Veneer',
-  no_treatment: 'No Treatment',
 };
 
 export default function SimulationView() {
   const { id } = useParams();
-  const navigate = useNavigate();
-
   const [simulation, setSimulation] = useState(null);
   const [patient, setPatient] = useState(null);
-  const [allPatients, setAllPatients] = useState([]);
   const [activeState, setActiveState] = useState(0);
   const [loading, setLoading] = useState(true);
   const [autoPlay, setAutoPlay] = useState(false);
-
   const [scanUrl, setScanUrl] = useState(null);
   const [scanFormat, setScanFormat] = useState('stl');
   const [textureUrl, setTextureUrl] = useState(null);
   const [textureName, setTextureName] = useState(null);
   const [dragOver, setDragOver] = useState(false);
 
-  const [stageId, setStageId] = useState('enamel');
-  const [treatmentId, setTreatmentId] = useState('rct');
+  // 'timeline' | 'clinical' | 'diagnosis'
+  const [sideTab, setSideTab] = useState('timeline');
   const [pickedTooth, setPickedTooth] = useState(null);
   const [pathology, setPathology] = useState({});
   const [xRayMode, setXRayMode] = useState(false);
   const [activeTool, setActiveTool] = useState('rotate');
-  const [caseTab, setCaseTab] = useState('overview');
+
+  // Diagnosis panel selections — independent of the manual ToothPicker so
+  // dentists can browse without overwriting their own clinical selection.
+  const [stageId, setStageId] = useState('enamel');
+  const [treatmentId, setTreatmentId] = useState('rct');
 
   const fileInputRef = useRef(null);
   const textureInputRef = useRef(null);
 
-  // ── Data load ──
   useEffect(() => {
-    let cancelled = false;
     async function load() {
       try {
         const { data } = await simulationAPI.get(id);
-        if (cancelled) return;
         setSimulation(data);
         if (data?.patient_id) {
           const { data: p } = await patientAPI.get(data.patient_id);
-          if (cancelled) return;
           setPatient(p);
-          // Default the right-panel tooth to the first target tooth on the sim
-          if (data.target_teeth?.length) setPickedTooth(data.target_teeth[0]);
         }
         if (data?.parent_scan_id) {
           const { data: scan } = await scanAPI.get(data.parent_scan_id);
-          if (!cancelled && scan?.storage_path?.startsWith('blob:')) {
+          if (scan?.storage_path && scan.storage_path.startsWith('blob:')) {
             setScanUrl(scan.storage_path);
             setScanFormat(scan.file_format || 'stl');
           }
         }
-      } catch { /* tolerate missing data */ }
-      finally { if (!cancelled) setLoading(false); }
+      } catch {
+        // handle
+      } finally {
+        setLoading(false);
+      }
     }
     load();
-    return () => { cancelled = true; };
   }, [id]);
 
-  // ── Patient list for sidebar ──
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const { data } = await patientAPI.list();
-        if (!cancelled) setAllPatients(Array.isArray(data) ? data : []);
-      } catch { /* */ }
-    })();
-    return () => { cancelled = true; };
-  }, []);
-
-  // ── Sync the right-panel stage selection back into the existing
-  //    clinical-pathology state so the DentalViewer decals + popup react ──
-  useEffect(() => {
-    const next = STAGE_TO_PATHOLOGY[stageId] || null;
-    setPathology(next || {});
-  }, [stageId]);
-
-  // ── Direct file uploads ──
+  // Direct STL/PLY upload on the simulation page
   const handleFileUpload = useCallback((e) => {
     const file = e.target.files?.[0];
     if (!file) return;
     const ext = file.name.split('.').pop().toLowerCase();
     if (!['stl', 'ply', 'obj'].includes(ext)) return;
-    setScanUrl(URL.createObjectURL(file));
+    const url = URL.createObjectURL(file);
+    setScanUrl(url);
     setScanFormat(ext);
   }, []);
 
@@ -158,11 +120,13 @@ export default function SimulationView() {
     setTextureUrl(URL.createObjectURL(file));
     setTextureName(file.name);
   }, []);
+
+  // Color texture upload (JPEG/PNG) — wraps the mesh with realistic color
   const handleTextureUpload = useCallback((e) => {
     applyTextureFile(e.target.files?.[0]);
   }, [applyTextureFile]);
 
-  // Window-level drag-drop for textures
+  // Window-level drag-drop for JPEG (canvas swallows pointer events)
   useEffect(() => {
     const onDragOver  = (e) => { e.preventDefault(); setDragOver(true); };
     const onDragLeave = (e) => { if (e.clientX === 0 && e.clientY === 0) setDragOver(false); };
@@ -172,8 +136,9 @@ export default function SimulationView() {
       const file = e.dataTransfer?.files?.[0];
       if (!file) return;
       const ext = file.name.split('.').pop().toLowerCase();
-      if (['jpg','jpeg','png','webp'].includes(ext)) applyTextureFile(file);
-      else if (['stl','ply','obj'].includes(ext)) {
+      if (['jpg','jpeg','png','webp'].includes(ext)) {
+        applyTextureFile(file);
+      } else if (['stl','ply','obj'].includes(ext)) {
         setScanUrl(URL.createObjectURL(file));
         setScanFormat(ext);
       }
@@ -188,40 +153,37 @@ export default function SimulationView() {
     };
   }, [applyTextureFile]);
 
-  // ── Timeline autoplay ──
   useEffect(() => {
     if (!autoPlay || !simulation?.states?.length) return;
-    const t = setInterval(() => {
+    const interval = setInterval(() => {
       setActiveState((s) => {
         if (s >= simulation.states.length - 1) { setAutoPlay(false); return s; }
         return s + 1;
       });
     }, 3000);
-    return () => clearInterval(t);
+    return () => clearInterval(interval);
   }, [autoPlay, simulation]);
 
   const states = simulation?.states || [];
   const currentState = states[activeState] || null;
-  const treatmentLabel = TREATMENT_LABEL[treatmentId] || 'Treatment';
+
+  // Default the diagnosis tooth to the first target tooth when sim loads
+  useEffect(() => {
+    if (!pickedTooth && simulation?.target_teeth?.length) {
+      setPickedTooth(simulation.target_teeth[0]);
+    }
+  }, [simulation, pickedTooth]);
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center h-full bg-surface-0">
-        <Loader2 className="animate-spin text-teal-400" size={32} />
-      </div>
-    );
+    return <div className="flex items-center justify-center h-full bg-surface-0"><Loader2 className="animate-spin text-gray-500" size={32} /></div>;
   }
   if (!simulation) {
-    return (
-      <div className="flex items-center justify-center h-full bg-surface-0">
-        <p className="text-red-400">Simulation not found</p>
-      </div>
-    );
+    return <div className="flex items-center justify-center h-full bg-surface-0"><p className="text-red-400">Simulation not found</p></div>;
   }
 
   return (
-    <div className="flex flex-col h-full bg-surface-0">
-      {/* Drag-drop hint overlay */}
+    <div className="flex flex-col h-full bg-surface-0 relative">
+      {/* Full-page drag-drop overlay */}
       {dragOver && (
         <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-black/80 border-2 border-dashed border-teal-400 pointer-events-none">
           <ImageIcon size={40} className="text-teal-400 mb-3" />
@@ -229,208 +191,299 @@ export default function SimulationView() {
           <p className="text-gray-400 text-sm mt-1">Texture atlas from your scanner</p>
         </div>
       )}
+      {/* Header */}
+      <div className="bg-surface-1 border-b border-white/5 px-6 py-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <Link to={patient ? `/patients/${patient.id}` : '/'} className="text-gray-600 hover:text-white transition">
+              <ArrowLeft size={18} />
+            </Link>
+            <div>
+              <h1 className="text-base font-display font-bold text-white">3D Simulation</h1>
+              <p className="text-xs text-gray-500 mt-0.5">
+                {simulation.clinician_prompt}
+                {patient && <span className="text-gray-400 ml-2">— {patient.first_name} {patient.last_name}</span>}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            {/* Upload mesh button */}
+            <input ref={fileInputRef} type="file" accept=".stl,.ply,.obj" className="hidden" onChange={handleFileUpload} />
+            <button onClick={() => fileInputRef.current?.click()}
+              className={`flex items-center gap-1.5 text-[11px] px-3 py-1.5 rounded-lg border transition ${
+                scanUrl ? 'border-green-500/20 text-green-400 bg-green-500/5' : 'border-white/10 text-gray-400 hover:text-white hover:bg-white/5'
+              }`}
+              title="OBJ recommended for color (STL has no UVs)">
+              <Upload size={12} />
+              {scanUrl ? `Mesh · .${scanFormat}` : 'Load Mesh'}
+            </button>
+            {/* Upload color texture (JPEG/PNG) */}
+            <input ref={textureInputRef} type="file" accept=".jpg,.jpeg,.png,.webp" className="hidden" onChange={handleTextureUpload} />
+            <button onClick={() => textureInputRef.current?.click()}
+              className={`flex items-center gap-1.5 text-[11px] px-3 py-1.5 rounded-lg border transition ${
+                textureUrl ? 'border-green-500/20 text-green-400 bg-green-500/5' : 'border-white/10 text-gray-400 hover:text-white hover:bg-white/5'
+              }`}
+              title="Drop JPEG anywhere or click to pick">
+              <ImageIcon size={12} />
+              {textureName ? `✓ ${textureName}` : 'Drop Colour JPEG'}
+            </button>
+            {simulation.target_teeth?.length > 0 && (
+              <div className="flex items-center gap-1.5">
+                <span className="text-[11px] text-gray-600">Teeth:</span>
+                {simulation.target_teeth.map((t) => (
+                  <span key={t} className="bg-white/10 text-white text-[11px] px-2 py-0.5 rounded-full font-medium">#{t}</span>
+                ))}
+              </div>
+            )}
+            <span className={`px-2.5 py-1 rounded-full text-[11px] font-medium ${
+              simulation.status === 'completed' ? 'bg-green-500/10 text-green-400'
+              : simulation.status === 'failed' ? 'bg-red-500/10 text-red-400'
+              : 'bg-amber-500/10 text-amber-400'
+            }`}>{simulation.status}</span>
+          </div>
+        </div>
+      </div>
 
-      {/* Top header */}
-      <CaseTopBar
-        onImportScan={() => fileInputRef.current?.click()}
-        onNewCase={() => navigate(patient ? `/patients/${patient.id}` : '/')}
-      />
-
-      {/* Hidden file inputs */}
-      <input ref={fileInputRef} type="file" accept=".stl,.ply,.obj" className="hidden" onChange={handleFileUpload} />
-      <input ref={textureInputRef} type="file" accept=".jpg,.jpeg,.png,.webp" className="hidden" onChange={handleTextureUpload} />
-
-      {/* Main 3-column layout */}
-      <div className="flex flex-1 min-h-0">
-        {/* Left: patient sidebar */}
-        <CasePatientSidebar
-          patients={allPatients}
-          activePatientId={patient?.id}
-          onPickPatient={(pid) => navigate(`/patients/${pid}`)}
-        />
-
-        {/* Center: case header + viewer */}
-        <div className="flex flex-col flex-1 min-w-0">
-          <CaseHeader
-            patient={patient}
-            caseId={`DV-${(simulation.id || '0').toString().slice(-4).toUpperCase()}`}
-            isFavorite={true}
-            activeTab={caseTab}
-            onTabChange={setCaseTab}
+      {/* 3D Viewer + Metrics Panel */}
+      <div className="flex-1 flex relative min-h-0">
+        <div className="flex-1 bg-black relative">
+          <DentalViewer
+            simulation={simulation}
+            activeStateIndex={activeState}
+            scanUrl={scanUrl}
+            scanFormat={scanFormat}
+            textureUrl={textureUrl}
+            clinicalPathology={pathology}
+            pickedTooth={pickedTooth}
+            xRayMode={xRayMode}
           />
 
-          {/* Viewer area */}
-          <div className="flex-1 relative bg-black min-h-0">
-            <DentalViewer
-              simulation={simulation}
-              activeStateIndex={activeState}
-              scanUrl={scanUrl}
-              scanFormat={scanFormat}
-              textureUrl={textureUrl}
-              clinicalPathology={pathology}
-              pickedTooth={pickedTooth}
-              xRayMode={xRayMode}
-            />
+          {/* Floating viewer toolbar */}
+          <ViewerToolbar activeTool={activeTool} onToolChange={setActiveTool} />
 
-            {/* Viewer left toolbar */}
-            <ViewerToolbar activeTool={activeTool} onToolChange={setActiveTool} />
-
-            {/* Top-right HUD: AI Detection + scale + info */}
-            <div className="absolute top-3 right-3 z-10 flex flex-col items-end gap-2 pointer-events-none">
-              <div className="flex items-center gap-2 bg-black/60 backdrop-blur border border-white/8 rounded-lg px-3 py-1.5 pointer-events-auto">
-                <div className="w-4 h-4 rounded bg-teal-400 flex items-center justify-center">
-                  <span className="text-[8px] font-bold text-black">AI</span>
-                </div>
-                <span className="text-[11px] font-medium text-gray-200">AI Detection</span>
-                <button
-                  onClick={() => setXRayMode((v) => !v)}
-                  role="switch"
-                  aria-checked={xRayMode}
-                  className={`relative w-8 h-4 rounded-full transition ${xRayMode ? 'bg-teal-500' : 'bg-surface-3'}`}
-                >
-                  <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition ${xRayMode ? 'left-4' : 'left-0.5'}`} />
-                </button>
-                <Info size={11} className="text-gray-500" />
-              </div>
-              <div className="flex items-center gap-2 bg-black/60 backdrop-blur border border-white/8 rounded-lg px-3 py-1.5 pointer-events-auto">
-                <div className="w-4 h-4 rounded bg-surface-3 flex items-center justify-center">
-                  <span className="text-[8px] font-bold text-gray-300">T</span>
-                </div>
-                <div className="flex items-center gap-1 text-[11px] text-gray-400 font-mono">
-                  <span>0</span>
-                  <span className="inline-block w-20 h-1.5 rounded-full bg-gradient-to-r from-red-500 via-amber-400 to-emerald-400" />
-                  <span>9</span>
-                </div>
-                <Info size={11} className="text-gray-500" />
-              </div>
+          {/* AI Detection HUD pill — also drives the X-Ray shader toggle */}
+          <div className="absolute top-3 right-3 z-10 flex items-center gap-2 bg-black/60 backdrop-blur border border-white/8 rounded-lg px-3 py-1.5 pointer-events-auto">
+            <div className="w-4 h-4 rounded bg-teal-400 flex items-center justify-center">
+              <span className="text-[8px] font-bold text-black">AI</span>
             </div>
-
-            {/* Bottom-center tooth-row + 3D toggle + fullscreen */}
-            <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-2 bg-black/60 backdrop-blur border border-white/8 rounded-xl px-2 py-1.5">
-              {['11','12','13','14','15','16'].map((fdi) => (
-                <button
-                  key={fdi}
-                  onClick={() => setPickedTooth(parseInt(fdi, 10))}
-                  className={`w-9 h-9 rounded-md flex items-center justify-center transition ${
-                    pickedTooth === parseInt(fdi, 10)
-                      ? 'bg-teal-500/20 text-teal-200 border border-teal-400/40'
-                      : 'text-gray-400 hover:text-white'
-                  }`}
-                >
-                  <MiniTooth />
-                </button>
-              ))}
-              <button
-                onClick={() => {/* 3D already active */}}
-                className="px-3 h-9 rounded-md bg-teal-500/20 border border-teal-400/40 text-teal-200 text-xs font-bold"
-              >
-                3D
-              </button>
-            </div>
+            <span className="text-[11px] font-medium text-gray-200">AI Detection</span>
             <button
-              className="absolute bottom-3 right-3 z-10 w-9 h-9 rounded-lg bg-black/60 backdrop-blur border border-white/8 text-gray-300 hover:text-white flex items-center justify-center"
-              aria-label="Fullscreen"
-              onClick={() => document.documentElement.requestFullscreen?.()}
+              onClick={() => setXRayMode((v) => !v)}
+              role="switch"
+              aria-checked={xRayMode}
+              aria-label="Toggle X-Ray vision"
+              className={`relative w-8 h-4 rounded-full transition ${xRayMode ? 'bg-teal-500' : 'bg-surface-3'}`}
             >
-              <Maximize2 size={14} />
+              <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition ${xRayMode ? 'left-4' : 'left-0.5'}`} />
             </button>
+            <Info size={11} className="text-gray-500" />
           </div>
 
-          {/* Timeline scrubber */}
-          {states.length > 1 && (
-            <div className="bg-surface-1 border-t border-white/5 px-5 py-3">
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={() => setActiveState((s) => Math.max(0, s - 1))}
-                  disabled={activeState === 0}
-                  className="p-2 rounded-lg border border-white/8 disabled:opacity-20 hover:bg-white/5 text-gray-400"
-                  aria-label="Previous milestone"
-                >
-                  <ChevronLeft size={14} />
-                </button>
-                <button
-                  onClick={() => { if (activeState >= states.length - 1) setActiveState(0); setAutoPlay(!autoPlay); }}
-                  className={`p-2 rounded-lg border transition ${autoPlay ? 'bg-teal-500/15 border-teal-400/30 text-teal-200' : 'border-white/8 hover:bg-white/5 text-gray-400'}`}
-                  aria-label={autoPlay ? 'Pause' : 'Play'}
-                >
-                  {autoPlay ? <Pause size={14} /> : <Play size={14} />}
-                </button>
-                <div className="flex-1">
-                  <input
-                    type="range"
-                    min={0}
-                    max={states.length - 1}
-                    value={activeState}
-                    onChange={(e) => { setActiveState(parseInt(e.target.value, 10)); setAutoPlay(false); }}
-                    className="w-full accent-teal-400"
-                  />
-                  <div className="flex justify-between mt-1">
+          {/* Fullscreen */}
+          <button
+            className="absolute bottom-3 right-3 z-10 w-9 h-9 rounded-lg bg-black/60 backdrop-blur border border-white/8 text-gray-300 hover:text-white flex items-center justify-center"
+            aria-label="Fullscreen"
+            onClick={() => document.documentElement.requestFullscreen?.()}
+          >
+            <Maximize2 size={14} />
+          </button>
+        </div>
+
+        {/* Side Panel */}
+        <div className="w-[360px] bg-surface-1 border-l border-white/5 flex flex-col">
+          {/* Tab switcher */}
+          <div className="flex border-b border-white/5 bg-black/30">
+            <SideTab id="timeline" active={sideTab} onClick={setSideTab} icon={Activity} label="Timeline" accent="bg-blue-500" />
+            <SideTab id="diagnosis" active={sideTab} onClick={setSideTab} icon={Stethoscope} label="Diagnosis" accent="bg-teal-400" />
+            <SideTab id="clinical" active={sideTab} onClick={setSideTab} icon={Layers} label="Clinical" accent="bg-emerald-500" badge={pickedTooth ? `#${pickedTooth}` : null} />
+          </div>
+
+          <div className="flex-1 overflow-y-auto">
+            {sideTab === 'timeline' && (
+              <>
+                <div className="p-4 border-b border-white/5">
+                  <div className="text-[11px] text-gray-600 uppercase tracking-wider mb-1">Treatment Timeline</div>
+                  <div className="text-sm font-display font-semibold text-white">{currentState?.label || 'No state selected'}</div>
+                  <div className="flex items-center gap-2 mt-2">
+                    <div className="flex-1 h-1 bg-white/5 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-white rounded-full transition-all"
+                        style={{ width: `${((activeState + 1) / states.length) * 100}%` }}
+                      />
+                    </div>
+                    <span className="text-[10px] text-gray-500 font-medium tabular-nums">{activeState + 1}/{states.length}</span>
+                  </div>
+                  <div className="text-[11px] text-gray-600 mt-2">Drag the slider to step through each milestone</div>
+                </div>
+
+                {currentState?.clinical_metrics && (
+                  <div className="p-4 border-b border-white/5">
+                    <h3 className="text-[11px] text-gray-600 uppercase tracking-wider mb-3">Clinical Metrics</h3>
+                    <div className="space-y-2">
+                      {Object.entries(currentState.clinical_metrics).map(([key, val]) => (
+                        <div key={key} className="flex justify-between items-center">
+                          <span className="text-[11px] text-gray-500 capitalize">{key.replace(/_/g, ' ')}</span>
+                          <MetricValue label={key} value={val} />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="p-4">
+                  <h3 className="text-[11px] text-gray-600 uppercase tracking-wider mb-3">Timeline</h3>
+                  <div className="space-y-1">
                     {states.map((s, i) => (
-                      <button
-                        key={i}
-                        onClick={() => { setActiveState(i); setAutoPlay(false); }}
-                        className={`text-[10px] px-2 py-0.5 rounded transition ${
-                          i === activeState ? 'bg-teal-400 text-black font-semibold' : 'text-gray-600 hover:text-gray-300'
-                        }`}
-                      >
-                        {s.label}
+                      <button key={i} onClick={() => setActiveState(i)}
+                        className={`w-full text-left px-3 py-2 rounded-lg text-xs transition ${
+                          i === activeState ? 'bg-white/10 text-white font-medium' : 'text-gray-500 hover:bg-white/5'
+                        }`}>
+                        <div className="flex items-center gap-2">
+                          <div className={`w-1.5 h-1.5 rounded-full ${i === activeState ? 'bg-white' : i < activeState ? 'bg-gray-500' : 'bg-gray-700'}`} />
+                          {s.label}
+                        </div>
                       </button>
                     ))}
                   </div>
                 </div>
-                <button
-                  onClick={() => setActiveState((s) => Math.min(states.length - 1, s + 1))}
-                  disabled={activeState === states.length - 1}
-                  className="p-2 rounded-lg border border-white/8 disabled:opacity-20 hover:bg-white/5 text-gray-400"
-                  aria-label="Next milestone"
-                >
-                  <ChevronRight size={14} />
-                </button>
+
+                <div className="p-4 border-t border-white/5">
+                  <h3 className="text-[11px] text-gray-600 uppercase tracking-wider mb-2">Module</h3>
+                  <span className="text-[11px] bg-white/5 text-gray-400 px-2 py-1 rounded capitalize">{simulation.module?.replace(/_/g, ' ')}</span>
+                </div>
+              </>
+            )}
+
+            {sideTab === 'diagnosis' && (
+              <DiagnosisTabContent
+                stageId={stageId}
+                onStageChange={(s) => {
+                  setStageId(s);
+                  // Drive the existing pathology engine so the popup + decals react.
+                  setPathology(STAGE_TO_PATHOLOGY[s] || {});
+                }}
+                treatmentId={treatmentId}
+                onTreatmentChange={setTreatmentId}
+                onShowSimulation={() => {
+                  const next = TREATMENT_TO_PATHOLOGY[treatmentId];
+                  setPathology(next || {});
+                }}
+              />
+            )}
+
+            {sideTab === 'clinical' && (
+              <div className="p-3 space-y-3">
+                <XRayToggle
+                  active={xRayMode}
+                  onToggle={() => setXRayMode((v) => !v)}
+                />
+                <ToothPicker
+                  value={pickedTooth}
+                  onPick={(fdi) => { setPickedTooth(fdi); setPathology({}); }}
+                  highlightTeeth={simulation.target_teeth || []}
+                />
+                {pickedTooth && (
+                  <ToothAnatomyPanel
+                    fdi={pickedTooth}
+                    pathology={pathology}
+                    onClose={() => { setPickedTooth(null); setPathology({}); }}
+                  />
+                )}
+                <PathologyPicker
+                  fdi={pickedTooth}
+                  value={pathology}
+                  onChange={setPathology}
+                />
+                {pickedTooth && pathology?.kind && (
+                  <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-lg p-3">
+                    <div className="text-[10px] text-emerald-300 uppercase tracking-wider mb-1">Treatment Plan Entry</div>
+                    <div className="text-xs text-white">
+                      Tooth #{pickedTooth} · Class {pathology.classification}
+                      {pathology.surfaces?.length ? ' ' + pathology.surfaces.join('') : ''}
+                      {' · '}
+                      <span className="capitalize">{(pathology.kind || '').replace(/_/g, ' ')}</span>
+                    </div>
+                    {pathology.depth && (
+                      <div className="text-[10px] text-gray-400 mt-1">
+                        Depth: <span className="capitalize">{pathology.depth.replace('_', ' ')}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Timeline Controls */}
+      {states.length > 1 && (
+        <div className="bg-surface-1 border-t border-white/5 px-6 py-3">
+          <div className="flex items-center gap-4">
+            <button onClick={() => setActiveState((s) => Math.max(0, s - 1))} disabled={activeState === 0}
+              className="p-2 rounded-lg border border-white/10 disabled:opacity-20 hover:bg-white/5 transition text-gray-400">
+              <ChevronLeft size={16} />
+            </button>
+            <button onClick={() => { if (activeState >= states.length - 1) setActiveState(0); setAutoPlay(!autoPlay); }}
+              className={`p-2 rounded-lg border transition ${autoPlay ? 'bg-white/10 border-white/20 text-white' : 'border-white/10 hover:bg-white/5 text-gray-400'}`}>
+              {autoPlay ? <Pause size={16} /> : <Play size={16} />}
+            </button>
+            <div className="flex-1">
+              <input type="range" min={0} max={states.length - 1} value={activeState}
+                onChange={(e) => { setActiveState(parseInt(e.target.value)); setAutoPlay(false); }} className="w-full" />
+              <div className="flex justify-between mt-1">
+                {states.map((s, i) => (
+                  <button key={i} onClick={() => { setActiveState(i); setAutoPlay(false); }}
+                    className={`text-[10px] px-2 py-0.5 rounded transition ${
+                      i === activeState ? 'bg-white text-black font-medium' : 'text-gray-600 hover:text-gray-300'
+                    }`}>{s.label}</button>
+                ))}
               </div>
             </div>
-          )}
+            <button onClick={() => setActiveState((s) => Math.min(states.length - 1, s + 1))} disabled={activeState === states.length - 1}
+              className="p-2 rounded-lg border border-white/10 disabled:opacity-20 hover:bg-white/5 transition text-gray-400">
+              <ChevronRight size={16} />
+            </button>
+          </div>
         </div>
-
-        {/* Right: diagnosis / simulation / treatment panel */}
-        <div className="w-[380px] flex-shrink-0 flex flex-col min-h-0">
-          <DiagnosisPanel
-            stageId={stageId}
-            onStageChange={setStageId}
-            treatmentId={treatmentId}
-            onTreatmentChange={setTreatmentId}
-            onShowSimulation={() => {
-              // Apply the treatment as the active pathology — DentalViewer
-              // decals + the ToothProgressionPopup react to this change.
-              const next = TREATMENT_TO_PATHOLOGY[treatmentId];
-              if (next) setPathology(next); else setPathology({});
-            }}
-          />
-        </div>
-      </div>
-
-      {/* Bottom strips */}
-      <div className="bg-surface-0 border-t border-white/5">
-        <BottomStrips
-          activeDiseaseStep={stageId}
-          onDiseaseStepClick={setStageId}
-          activeTreatmentStep={null}
-          onTreatmentStepClick={() => {/* drives popup phase in future */}}
-          treatmentLabel={treatmentLabel}
-        />
-      </div>
+      )}
     </div>
   );
 }
 
-/* Tiny tooth icon for the bottom-center selector strip. */
-function MiniTooth() {
+function SideTab({ id, active, onClick, icon: Icon, label, accent, badge }) {
+  const isActive = active === id;
   return (
-    <svg viewBox="0 0 24 28" className="w-5 h-5">
-      <path
-        d="M5 6 C 5 2 10 1 12 3 C 14 1 19 2 19 6 L 18 11 C 18 17 16 24 13 26 L 11 26 C 8 24 6 17 6 11 Z"
-        fill="currentColor"
-        opacity="0.85"
-      />
-    </svg>
+    <button
+      onClick={() => onClick(id)}
+      className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 text-[11px] font-semibold transition border-b-2 ${
+        isActive ? `text-white ${accent.replace('bg-', 'border-')} bg-white/5` : 'border-transparent text-gray-500 hover:text-gray-300'
+      }`}
+    >
+      <Icon size={12} />
+      {label}
+      {badge && (
+        <span className="ml-1 bg-emerald-500/20 text-emerald-300 text-[9px] px-1.5 py-0.5 rounded-full">
+          {badge}
+        </span>
+      )}
+    </button>
   );
+}
+
+function MetricValue({ label, value }) {
+  if (typeof value === 'boolean') {
+    return <span className={`text-[11px] px-1.5 py-0.5 rounded ${value ? 'bg-red-500/10 text-red-400' : 'bg-green-500/10 text-green-400'}`}>{value ? 'Yes' : 'No'}</span>;
+  }
+  const colorMap = {
+    stage: { initial: 'bg-green-500/10 text-green-400', enamel: 'bg-yellow-500/10 text-yellow-400', dentin: 'bg-orange-500/10 text-orange-400', pulp: 'bg-red-500/10 text-red-400', abscess: 'bg-red-500/15 text-red-300', restored: 'bg-blue-500/10 text-blue-400', extracted: 'bg-gray-500/10 text-gray-400', endodontic: 'bg-purple-500/10 text-purple-400' },
+    prognosis: { excellent: 'bg-green-500/10 text-green-400', good: 'bg-green-500/10 text-green-400', fair: 'bg-yellow-500/10 text-yellow-400', poor: 'bg-red-500/10 text-red-400' },
+    risk: { low: 'bg-green-500/10 text-green-400', moderate: 'bg-yellow-500/10 text-yellow-400', high: 'bg-red-500/10 text-red-400' },
+    risk_level: { low: 'bg-green-500/10 text-green-400', moderate: 'bg-yellow-500/10 text-yellow-400', high: 'bg-red-500/10 text-red-400' },
+  };
+  const map = colorMap[label];
+  if (map && map[value]) {
+    return <span className={`text-[11px] px-1.5 py-0.5 rounded font-medium capitalize ${map[value]}`}>{String(value).replace(/_/g, ' ')}</span>;
+  }
+  return <span className="text-[11px] font-medium text-gray-300">{String(value).replace(/_/g, ' ')}</span>;
 }
