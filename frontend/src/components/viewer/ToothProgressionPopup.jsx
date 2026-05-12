@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef, useCallback, Suspense } from 'react';
 import { Canvas, useFrame, useLoader } from '@react-three/fiber';
-import { OrbitControls, Html } from '@react-three/drei';
+import { OrbitControls, Html, Environment, ContactShadows } from '@react-three/drei';
 import * as THREE from 'three';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 
@@ -486,12 +486,12 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
     // Values bumped up significantly so the effect is obvious on the
     // small popup canvas (was previously too subtle to read).
     if (!phaseData.crownCap) {
-      const uSSSColor      = { value: new THREE.Color('#e85c5c') };  // warm pulp-red
-      const uSSSStrength   = { value: 0.65 };                         // ← much stronger
-      const uRimColor      = { value: new THREE.Color('#fff3e0') };  // warm clinical white
-      const uRimStrength   = { value: 0.85 };                         // ← much stronger
-      const uShineColor    = { value: new THREE.Color('#ffffff') };  // top-cusp specular sheen
-      const uShineStrength = { value: 0.55 };
+      const uSSSColor      = { value: new THREE.Color('#e85c5c') };
+      const uSSSStrength   = { value: 0.40 };
+      const uRimColor      = { value: new THREE.Color('#fff3e0') };
+      const uRimStrength   = { value: 0.50 };
+      const uShineColor    = { value: new THREE.Color('#ffffff') };
+      const uShineStrength = { value: 0.35 };
       material.userData.shaderUniforms = {
         uSSSColor, uSSSStrength, uRimColor, uRimStrength, uShineColor, uShineStrength,
       };
@@ -1428,21 +1428,34 @@ export default function ToothProgressionPopup({ tooth, pathology, onClose }) {
         </button>
       </div>
 
-      {/* 3D simulation — bigger canvas so the whole tooth fits comfortably.
-          User can drag to rotate AND scroll to zoom; pan stays disabled so
-          the tooth doesn't get pushed off-frame. Pulled the camera back a
-          bit and widened the FOV slightly so the full crown + root render
-          inside the canvas without clipping. */}
-      <div style={{ height: 380, background: '#1c1c28' }}>
-        <Canvas camera={{ position: [0, 4, 32], fov: 36 }} shadows gl={{ antialias: true, toneMapping: THREE.ACESFilmicToneMapping, toneMappingExposure: 1.05 }}>
-          {/* Cinematic medical lighting on the tooth: a strong key light
-              from upper-right, a cool fill from the opposite side, a warm
-              underbite bounce, and a soft cool rim for separation. */}
-          <ambientLight intensity={0.85} />
-          <directionalLight position={[6, 12, 8]} intensity={1.7} castShadow shadow-mapSize={[1024, 1024]} />
-          <directionalLight position={[-6, 6, -5]} intensity={0.7} color="#cce0ff" />
-          <directionalLight position={[0, -8, 10]} intensity={0.4} color="#ffd9b5" />
-          <directionalLight position={[0, 4, -14]} intensity={0.55} color="#e0eaff" />
+      {/* 3D simulation canvas — bigger now and lit with a real IBL
+          environment so the tooth material's clearcoat actually has
+          something to reflect. */}
+      <div
+        style={{
+          height: 460,
+          background: 'radial-gradient(ellipse at center, #2a2538 0%, #07060d 75%)',
+        }}
+      >
+        <Canvas
+          camera={{ position: [0, 4, 30], fov: 36 }}
+          shadows
+          gl={{
+            antialias: true,
+            toneMapping: THREE.ACESFilmicToneMapping,
+            toneMappingExposure: 1.25,
+          }}
+        >
+          {/* Strong studio key light from upper-right, cool fill, warm
+              underbite bounce, cool rim from behind, AND a real IBL
+              environment for full PBR reflections in the clearcoat. */}
+          <ambientLight intensity={0.55} />
+          <directionalLight position={[6, 12, 8]} intensity={2.1} castShadow shadow-mapSize={[1024, 1024]} />
+          <directionalLight position={[-6, 6, -5]} intensity={0.8} color="#cce0ff" />
+          <directionalLight position={[0, -8, 10]} intensity={0.45} color="#ffd9b5" />
+          <directionalLight position={[0, 4, -14]} intensity={0.7} color="#e0eaff" />
+          <Environment preset="studio" environmentIntensity={1.1} />
+
           <Suspense fallback={<ToothLoadingFallback />}>
             {fileInfo ? (
               <RealToothModel
@@ -1454,6 +1467,16 @@ export default function ToothProgressionPopup({ tooth, pathology, onClose }) {
             ) : (
               <ToothModel anatomy={anatomy} phaseData={phaseData} />
             )}
+            {/* Soft ground shadow under the tooth — anchors it visually
+                so it doesn't appear to float against the dark backdrop. */}
+            <ContactShadows
+              position={[0, -8, 0]}
+              opacity={0.55}
+              scale={20}
+              blur={2.4}
+              far={12}
+              color="#000"
+            />
           </Suspense>
           <OrbitControls
             target={[0, 0, 0]}
