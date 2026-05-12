@@ -481,55 +481,86 @@ function RealToothModel({ fileInfo, anatomy, phaseData, onReady }) {
     });
 
     // ── Custom GLSL shader injection ──
-    // Extends MeshPhysicalMaterial via onBeforeCompile so we keep all of
-    // Three.js's PBR + IBL lighting AND add three medically-meaningful
-    // optical effects on top:
-    //   1. Subsurface scattering — soft red light bleeds through the
-    //      thinner edges of the enamel at grazing angles (mimics blood/
-    //      pulp showing through translucent enamel — the "tooth glow"
-    //      you see in close-up dental photography).
-    //   2. Rim lighting — bright silhouette halo so the tooth reads as
-    //      3D against the dark popup backdrop without flat patches.
-    //   3. Wet specular boost — sharpens the highlight on cusps so the
-    //      tooth looks like an actual moist enamel surface.
-    // Disabled on the ceramic-crown phase (transmission already 0).
+    // Extends MeshPhysicalMaterial via onBeforeCompile to add four
+    // optical effects ON TOP of Three.js's existing PBR + IBL pipeline.
+    // Values bumped up significantly so the effect is obvious on the
+    // small popup canvas (was previously too subtle to read).
     if (!phaseData.crownCap) {
-      const uSSSColor    = { value: new THREE.Color('#d04848') };
-      const uSSSStrength = { value: 0.22 };
-      const uRimColor    = { value: new THREE.Color('#fff0dc') };
-      const uRimStrength = { value: 0.32 };
-      material.userData.shaderUniforms = { uSSSColor, uSSSStrength, uRimColor, uRimStrength };
+      const uSSSColor      = { value: new THREE.Color('#e85c5c') };  // warm pulp-red
+      const uSSSStrength   = { value: 0.65 };                         // ← much stronger
+      const uRimColor      = { value: new THREE.Color('#fff3e0') };  // warm clinical white
+      const uRimStrength   = { value: 0.85 };                         // ← much stronger
+      const uShineColor    = { value: new THREE.Color('#ffffff') };  // top-cusp specular sheen
+      const uShineStrength = { value: 0.55 };
+      material.userData.shaderUniforms = {
+        uSSSColor, uSSSStrength, uRimColor, uRimStrength, uShineColor, uShineStrength,
+      };
       material.onBeforeCompile = (shader) => {
-        shader.uniforms.uSSSColor    = uSSSColor;
-        shader.uniforms.uSSSStrength = uSSSStrength;
-        shader.uniforms.uRimColor    = uRimColor;
-        shader.uniforms.uRimStrength = uRimStrength;
+        shader.uniforms.uSSSColor      = uSSSColor;
+        shader.uniforms.uSSSStrength   = uSSSStrength;
+        shader.uniforms.uRimColor      = uRimColor;
+        shader.uniforms.uRimStrength   = uRimStrength;
+        shader.uniforms.uShineColor    = uShineColor;
+        shader.uniforms.uShineStrength = uShineStrength;
 
-        // Add uniform declarations near the top of the fragment shader.
+        // Declare uniforms in BOTH stages: vertex needs to forward world
+        // normal so we can compute the up-cusp shine independently of
+        // view angle.
+        shader.vertexShader = shader.vertexShader.replace(
+          '#include <common>',
+          `#include <common>
+           varying vec3 vWorldNormalCustom;`
+        );
+        shader.vertexShader = shader.vertexShader.replace(
+          '#include <beginnormal_vertex>',
+          `#include <beginnormal_vertex>
+           vWorldNormalCustom = normalize(mat3(modelMatrix) * objectNormal);`
+        );
+
         shader.fragmentShader = shader.fragmentShader.replace(
           '#include <common>',
           `#include <common>
            uniform vec3  uSSSColor;
            uniform float uSSSStrength;
            uniform vec3  uRimColor;
-           uniform float uRimStrength;`
+           uniform float uRimStrength;
+           uniform vec3  uShineColor;
+           uniform float uShineStrength;
+           varying vec3 vWorldNormalCustom;`
         );
 
-        // Inject SSS + rim into the FINAL fragment color, after Three.js's
-        // PBR lighting has computed the diffuse + specular contributions.
-        // vNormal and vViewPosition are standard varyings provided by
-        // MeshPhysicalMaterial — we just consume them.
+        // Inject ALL effects AFTER tone mapping + IBL but BEFORE
+        // dithering. Using a strong fresnel term + an up-facing dot
+        // product for the cusp shine. The final result is multiplied
+        // through gl_FragColor.a so transparency stays correct.
         shader.fragmentShader = shader.fragmentShader.replace(
           '#include <dithering_fragment>',
-          `#include <dithering_fragment>
-           vec3 _viewDir = normalize(vViewPosition);
-           float _ndotv = clamp(abs(dot(normalize(vNormal), _viewDir)), 0.0, 1.0);
-           // 1. Subsurface scattering — red glow on edge-on areas
-           float _sss = pow(1.0 - _ndotv, 1.8) * uSSSStrength;
-           gl_FragColor.rgb = mix(gl_FragColor.rgb, gl_FragColor.rgb + uSSSColor * _sss, gl_FragColor.a);
-           // 2. Rim lighting — bright silhouette halo
-           float _rim = pow(1.0 - _ndotv, 3.6) * uRimStrength;
-           gl_FragColor.rgb += uRimColor * _rim;`
+          `// === Custom tooth shader injection ===
+           vec3 _viewDir   = normalize(vViewPosition);
+           vec3 _shadeN    = normalize(vNormal);
+           float _ndotv    = clamp(abs(dot(_shadeN, _viewDir)), 0.0, 1.0);
+           float _fresnel  = pow(1.0 - _ndotv, 2.0);
+
+           // 1. Subsurface scattering — bright at glancing angles
+           float _sss = pow(1.0 - _ndotv, 1.6) * uSSSStrength;
+           gl_FragColor.rgb += uSSSColor * _sss * gl_FragColor.a;
+
+           // 2. Rim lighting — sharper silhouette halo
+           float _rim = pow(1.0 - _ndotv, 3.0) * uRimStrength;
+           gl_FragColor.rgb += uRimColor * _rim;
+
+           // 3. Cusp shine — bright highlight on upward-facing surfaces
+           //    (cusps, ridges) independent of camera. Mimics a clinical
+           //    overhead studio light catching the wet enamel.
+           float _upFacing = clamp(dot(normalize(vWorldNormalCustom), vec3(0.0, 1.0, 0.3)), 0.0, 1.0);
+           float _shine = pow(_upFacing, 12.0) * uShineStrength;
+           gl_FragColor.rgb += uShineColor * _shine;
+
+           // 4. Soft contrast lift — punch the midtones slightly so the
+           //    cusps + grooves read with more anatomical definition.
+           gl_FragColor.rgb = pow(gl_FragColor.rgb, vec3(0.92));
+
+           #include <dithering_fragment>`
         );
       };
     }
