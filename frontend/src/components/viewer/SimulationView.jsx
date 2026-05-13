@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { simulationAPI, patientAPI, scanAPI } from '../../services/mockApi';
+import { simulationAPI, patientAPI, scanAPI, treatmentAPI, clinicalAPI } from '../../services/mockApi';
 import DentalViewer from './DentalViewer';
 import ToothPicker from './ToothPicker';
 import PathologyPicker from './PathologyPicker';
@@ -8,6 +8,7 @@ import ToothAnatomyPanel from './ToothAnatomyPanel';
 import XRayToggle from './XRayToggle';
 import ViewerToolbar from './ViewerToolbar';
 import DiagnosisTabContent from './DiagnosisTabContent';
+import { exportCaseReport } from './caseReport';
 import {
   ChevronLeft, ChevronRight, Loader2, ArrowLeft, Play, Pause,
   Upload, Image as ImageIcon, Activity, Layers, Stethoscope, Maximize2, Info,
@@ -73,6 +74,9 @@ export default function SimulationView() {
   // dentists can browse without overwriting their own clinical selection.
   const [stageId, setStageId] = useState('enamel');
   const [treatmentId, setTreatmentId] = useState('rct');
+  // Toast feedback for treatment / report actions
+  const [toast, setToast] = useState(null);
+  const [exporting, setExporting] = useState(false);
 
   const fileInputRef = useRef(null);
   const textureInputRef = useRef(null);
@@ -189,6 +193,17 @@ export default function SimulationView() {
           <ImageIcon size={40} className="text-teal-400 mb-3" />
           <p className="text-white font-semibold text-base">Drop colour JPEG to apply</p>
           <p className="text-gray-400 text-sm mt-1">Texture atlas from your scanner</p>
+        </div>
+      )}
+
+      {/* Toast — action feedback (treatment saved, report generated, etc.) */}
+      {toast && (
+        <div className={`absolute top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-lg border text-sm font-medium shadow-lg pointer-events-none ${
+          toast.type === 'ok'
+            ? 'bg-teal-500/15 border-teal-400/40 text-teal-100'
+            : 'bg-red-500/15 border-red-400/40 text-red-100'
+        }`}>
+          {toast.msg}
         </div>
       )}
       {/* Header */}
@@ -364,10 +379,32 @@ export default function SimulationView() {
                 }}
                 treatmentId={treatmentId}
                 onTreatmentChange={setTreatmentId}
-                onShowSimulation={() => {
+                onShowSimulation={async () => {
+                  // 1. Apply the treatment to the live scan + popup
                   const next = TREATMENT_TO_PATHOLOGY[treatmentId];
                   setPathology(next || {});
+
+                  // 2. Persist a treatment record on the patient so it
+                  // shows up in their profile next time they open it.
+                  if (patient && treatmentId !== 'no_treatment') {
+                    try {
+                      await treatmentAPI.create(patient.id, {
+                        treatment_type: treatmentId,
+                        target_tooth: pickedTooth,
+                        diagnosis_stage: stageId,
+                        notes: `Proposed via 3D simulation`,
+                      });
+                      setToast({ type: 'ok', msg: `Treatment plan saved: ${treatmentId.replace('_', ' ')} on tooth #${pickedTooth || '—'}` });
+                    } catch {
+                      setToast({ type: 'err', msg: 'Failed to save treatment plan' });
+                    }
+                  } else if (treatmentId === 'no_treatment') {
+                    setToast({ type: 'ok', msg: 'Recorded: no treatment recommended' });
+                  }
+                  setTimeout(() => setToast(null), 3200);
                 }}
+                onExportReport={() => exportCaseReport({ simulation, patient, stageId, treatmentId, pickedTooth, setExporting, setToast })}
+                exporting={exporting}
               />
             )}
 

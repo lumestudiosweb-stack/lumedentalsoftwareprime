@@ -1,6 +1,11 @@
 /**
  * Mock API layer — replaces real API calls with local demo data.
  * Every function returns a Promise that resolves like axios { data: ... }
+ *
+ * Persistence: sims, scans, and clinical records created at runtime
+ * are flushed to localStorage so a page refresh doesn't wipe them.
+ * The mock data modules are still the SOURCE OF TRUTH on first load —
+ * we only overlay user-created records on top.
  */
 import {
   mockPatients, mockClinicalRecords, mockScans, mockTreatments,
@@ -9,6 +14,61 @@ import {
 
 const delay = (ms = 200) => new Promise((r) => setTimeout(r, ms));
 const wrap = async (data) => { await delay(); return { data }; };
+
+// ── localStorage persistence ──────────────────────────────────────────
+// We hydrate the in-memory mock objects from localStorage on boot and
+// flush them on every mutation, so user-created sims / scans / treatments
+// survive a page refresh. Keys are namespaced per-collection.
+const LS_KEYS = {
+  simulations:     'lume.mock.simulations.v1',
+  scans:           'lume.mock.scans.v1',
+  treatments:      'lume.mock.treatments.v1',
+  clinicalRecords: 'lume.mock.clinicalRecords.v1',
+};
+const STORAGE = typeof window !== 'undefined' && window.localStorage;
+function lsGet(key) {
+  if (!STORAGE) return null;
+  try { const v = STORAGE.getItem(key); return v ? JSON.parse(v) : null; } catch { return null; }
+}
+function lsSet(key, value) {
+  if (!STORAGE) return;
+  try { STORAGE.setItem(key, JSON.stringify(value)); } catch { /* quota or private mode */ }
+}
+// Hydrate on import: merge persisted keys back into the runtime mock dicts.
+(function hydrateMocks() {
+  const persistedSims = lsGet(LS_KEYS.simulations);
+  if (persistedSims) Object.keys(persistedSims).forEach((pid) => {
+    mockSimulations[pid] = [...(mockSimulations[pid] || []), ...persistedSims[pid]];
+  });
+  const persistedScans = lsGet(LS_KEYS.scans);
+  if (persistedScans) Object.keys(persistedScans).forEach((pid) => {
+    mockScans[pid] = [...(mockScans[pid] || []), ...persistedScans[pid]];
+  });
+  const persistedTreatments = lsGet(LS_KEYS.treatments);
+  if (persistedTreatments) Object.keys(persistedTreatments).forEach((pid) => {
+    mockTreatments[pid] = [...(mockTreatments[pid] || []), ...persistedTreatments[pid]];
+  });
+  const persistedRecords = lsGet(LS_KEYS.clinicalRecords);
+  if (persistedRecords) Object.keys(persistedRecords).forEach((pid) => {
+    mockClinicalRecords[pid] = [...(mockClinicalRecords[pid] || []), ...persistedRecords[pid]];
+  });
+})();
+// Flush helpers — we only persist records WE created at runtime (not the
+// seed data), to keep the localStorage payload small and resettable.
+function flushPersisted(key, dict, isUserCreated) {
+  const onlyUserCreated = {};
+  Object.keys(dict).forEach((pid) => {
+    const filtered = dict[pid].filter(isUserCreated);
+    if (filtered.length) onlyUserCreated[pid] = filtered;
+  });
+  lsSet(key, onlyUserCreated);
+}
+function persistAll() {
+  flushPersisted(LS_KEYS.simulations,     mockSimulations,     (s) => s.id?.startsWith('sim-new-'));
+  flushPersisted(LS_KEYS.scans,           mockScans,           (s) => s.id?.startsWith('scan-new-'));
+  flushPersisted(LS_KEYS.treatments,      mockTreatments,      (t) => t.id?.startsWith('t-new-'));
+  flushPersisted(LS_KEYS.clinicalRecords, mockClinicalRecords, (r) => r.id?.startsWith('cr-new-'));
+}
 
 // Auth
 export const authAPI = {
@@ -48,7 +108,13 @@ export const patientAPI = {
 export const clinicalAPI = {
   listByPatient: (pid) => wrap(mockClinicalRecords[pid] || []),
   getPerioChart: (pid) => wrap((mockClinicalRecords[pid] || []).filter((r) => r.pocket_depth_mm)),
-  create: (pid, data) => wrap({ id: 'cr-new', patient_id: pid, ...data }),
+  create: (pid, data) => {
+    const rec = { id: 'cr-new-' + Date.now(), patient_id: pid, ...data, created_at: new Date().toISOString() };
+    if (!mockClinicalRecords[pid]) mockClinicalRecords[pid] = [];
+    mockClinicalRecords[pid].push(rec);
+    persistAll();
+    return wrap(rec);
+  },
   update: (id, data) => wrap({ id, ...data }),
 };
 
@@ -64,7 +130,7 @@ export const scanAPI = {
   },
   upload: (pid, file) => {
     const newScan = {
-      id: 's-new-' + Date.now(),
+      id: 'scan-new-' + Date.now(),
       patient_id: pid,
       status: 'ready',
       scan_type: 'intraoral',
@@ -76,10 +142,12 @@ export const scanAPI = {
       quality_score: 'high',
       vertex_count: null,
       face_count: null,
-      _file: file, // Keep reference for 3D viewer
+      // _file is intentionally NOT persisted — blob URLs from
+      // URL.createObjectURL() don't survive a refresh anyway.
     };
     if (!mockScans[pid]) mockScans[pid] = [];
     mockScans[pid].push(newScan);
+    persistAll();
     return wrap(newScan);
   },
   getMeshes: (id) => wrap([]),
@@ -219,6 +287,7 @@ export const simulationAPI = {
     const pid = data.patient_id;
     if (!mockSimulations[pid]) mockSimulations[pid] = [];
     mockSimulations[pid].push(newSim);
+    persistAll();
     return wrap(newSim);
   },
 };
@@ -226,7 +295,13 @@ export const simulationAPI = {
 // Treatments
 export const treatmentAPI = {
   listByPatient: (pid) => wrap(mockTreatments[pid] || []),
-  create: (pid, data) => wrap({ id: 't-new', patient_id: pid, ...data, status: 'proposed' }),
+  create: (pid, data) => {
+    const t = { id: 't-new-' + Date.now(), patient_id: pid, ...data, status: 'proposed', created_at: new Date().toISOString() };
+    if (!mockTreatments[pid]) mockTreatments[pid] = [];
+    mockTreatments[pid].push(t);
+    persistAll();
+    return wrap(t);
+  },
   complete: (id) => wrap({ id, status: 'completed', message: 'Treatment completed. Post-op follow-up events scheduled.' }),
 };
 

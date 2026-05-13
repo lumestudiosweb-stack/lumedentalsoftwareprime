@@ -1,4 +1,4 @@
-import { AlertTriangle, ArrowRight, Play } from 'lucide-react';
+import { AlertTriangle, ArrowRight, Play, FileText, Loader2 } from 'lucide-react';
 import {
   StageEnamelDecay, StageDentinInvolvement, StagePulpExposure,
   StagePeriapicalInfection, StageToothLoss,
@@ -41,6 +41,8 @@ export default function DiagnosisTabContent({
   treatmentId = 'rct',
   onTreatmentChange,
   onShowSimulation,
+  onExportReport,
+  exporting = false,
 }) {
   const currentStage = PROGRESSION.find((s) => s.id === stageId) || PROGRESSION[0];
   const currentStageIndex = PROGRESSION.findIndex((s) => s.id === stageId);
@@ -130,14 +132,28 @@ export default function DiagnosisTabContent({
         </div>
       </div>
 
-      {/* CTA */}
+      {/* Primary CTA — apply treatment to the live 3D scan + save it */}
       <button
         onClick={onShowSimulation}
-        className="w-full flex items-center justify-center gap-2 py-2.5 rounded-md bg-teal-500 hover:bg-teal-400 text-black font-semibold text-xs transition"
+        className="w-full flex items-center justify-center gap-2 py-2.5 rounded-md bg-teal-500 hover:bg-teal-400 text-black font-semibold text-xs transition shadow-[0_4px_18px_rgba(20,184,166,0.35)]"
       >
         Show Treatment Simulation
         <ArrowRight size={14} />
       </button>
+
+      {/* Secondary CTA — export the case as a printable PDF report */}
+      {onExportReport && (
+        <button
+          onClick={onExportReport}
+          disabled={exporting}
+          className="w-full flex items-center justify-center gap-2 py-2 rounded-md bg-surface-2 hover:bg-surface-3 border border-white/8 text-gray-200 text-[11px] font-medium transition disabled:opacity-50 disabled:cursor-wait"
+        >
+          {exporting
+            ? <><Loader2 size={12} className="animate-spin" />Generating report…</>
+            : <><FileText size={12} />Export Patient Report (PDF)</>
+          }
+        </button>
+      )}
 
       {/* Disease Progression Timeline strip */}
       <div className="bg-surface-2 border border-white/5 rounded-md p-2.5">
