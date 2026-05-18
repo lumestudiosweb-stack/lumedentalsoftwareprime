@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { X, Search, Filter, FileBox, Loader2, ExternalLink, Database, Inbox } from 'lucide-react';
 
 /* ──────────────────────────────────────────────────────────────────────
@@ -76,10 +77,24 @@ export default function ScanLibrary({ open, onClose, onLoadScan }) {
     return acc;
   }, {});
 
-  return (
+  // Portal to body + max int32 z-index so the modal sits ABOVE drei's
+  // auto-z-indexed <Html> overlays (clinical badges, marker pickers,
+  // etc.) coming out of the DentalViewer Canvas behind it.
+  return createPortal(
     <div
-      className="fixed inset-0 z-[100] bg-black/80 backdrop-blur-sm flex items-center justify-center p-6"
       onClick={(e) => { if (e.target === e.currentTarget) onClose?.(); }}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 2147483647,
+        background: 'rgba(2,2,6,0.85)',
+        backdropFilter: 'blur(6px)',
+        WebkitBackdropFilter: 'blur(6px)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 24,
+      }}
     >
       <div className="w-full max-w-5xl h-[80vh] bg-surface-1 border border-white/10 rounded-2xl shadow-2xl flex flex-col overflow-hidden">
         {/* Header */}
@@ -186,7 +201,8 @@ export default function ScanLibrary({ open, onClose, onLoadScan }) {
           <span>Scans are anonymized via <code className="text-gray-400">scripts/anonymize_scans.py</code></span>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
