@@ -271,10 +271,25 @@ export default function SimulationView() {
             clinicalPathology={pathology}
             pickedTooth={pickedTooth}
             xRayMode={xRayMode}
+            activeTool={activeTool}
           />
 
           {/* Floating viewer toolbar */}
           <ViewerToolbar activeTool={activeTool} onToolChange={setActiveTool} />
+
+          {/* Tool-mode status hint — only when a non-default tool is active */}
+          {activeTool !== 'rotate' && (
+            <div className="absolute top-3 left-20 z-10 bg-black/70 backdrop-blur border border-teal-400/30 rounded-md px-3 py-1.5 text-[11px] text-teal-100 font-medium pointer-events-none shadow-lg">
+              {{
+                pan: 'PAN mode — drag to move the camera laterally',
+                zoom: 'ZOOM mode — scroll or pinch to zoom',
+                section: 'SECTION — click any point to slice through that height',
+                transparency: 'TRANSPARENCY — scan rendered ghost-mode',
+                measure: 'MEASURE — click two points to measure distance',
+                annotation: 'ANNOTATION — click any point to add a label',
+              }[activeTool]}
+            </div>
+          )}
 
           {/* AI Detection HUD pill — also drives the X-Ray shader toggle */}
           <div className="absolute top-3 right-3 z-10 flex items-center gap-2 bg-black/60 backdrop-blur border border-white/8 rounded-lg px-3 py-1.5 pointer-events-auto">

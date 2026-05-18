@@ -11,6 +11,14 @@ import ToothOverlay, { RealisticTooth } from './ToothOverlay';
 import ToothProgressionPopup from './ToothProgressionPopup';
 import { useXRayMaterial } from './useXRayMaterial';
 
+// Tiny vector helpers for the Measure tool — no Three.Vector3 import needed
+// per call since we only need scalar distance and a midpoint.
+const distance = (a, b) => {
+  const dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2];
+  return Math.sqrt(dx * dx + dy * dy + dz * dz);
+};
+const midpoint = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2];
+
 /* ── Same PLY UV extractor as ScanPreview3D ─────────────────── */
 async function extractPLYExtras(url) {
   try {
@@ -87,7 +95,7 @@ function normalizeVertexColors(geo) {
  * Camera positioned for a front-facing clinical view looking slightly
  * down into the mouth — like a patient in the chair.
  */
-export default function DentalViewer({ scanUrl, scanFormat, simulation, activeStateIndex, textureUrl, clinicalPathology, pickedTooth, xRayMode = false }) {
+export default function DentalViewer({ scanUrl, scanFormat, simulation, activeStateIndex, textureUrl, clinicalPathology, pickedTooth, xRayMode = false, activeTool = 'rotate' }) {
   const [popupHidden, setPopupHidden] = useState(false);
 
   // ── Derive a pathology context from EITHER picker (manual) or
@@ -128,7 +136,8 @@ export default function DentalViewer({ scanUrl, scanFormat, simulation, activeSt
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
       <Canvas
         camera={{ position: [0, 14, 42], fov: 34, near: 0.1, far: 1000 }}
-        gl={{ antialias: true, toneMapping: THREE.ACESFilmicToneMapping, toneMappingExposure: 1.1 }}
+        gl={{ antialias: true, toneMapping: THREE.ACESFilmicToneMapping, toneMappingExposure: 1.1, localClippingEnabled: true }}
+        onCreated={({ gl }) => { gl.localClippingEnabled = true; }}
         shadows
         style={{ background: '#000' }}
       >
@@ -149,7 +158,7 @@ export default function DentalViewer({ scanUrl, scanFormat, simulation, activeSt
             // scan stays clean during simulation playback. The popup (outside
             // Canvas) handles the disease-progression visualization via
             // effectivePathology which also covers simulation timeline states.
-            <TreatmentJourney url={scanUrl} format={scanFormat} textureUrl={textureUrl} simulation={simulation} activeStateIndex={activeStateIndex} clinicalPathology={clinicalPathology} pickedTooth={pickedTooth} xRayMode={xRayMode} />
+            <TreatmentJourney url={scanUrl} format={scanFormat} textureUrl={textureUrl} simulation={simulation} activeStateIndex={activeStateIndex} clinicalPathology={clinicalPathology} pickedTooth={pickedTooth} xRayMode={xRayMode} activeTool={activeTool} />
           ) : (
             <PlaceholderArch simulation={simulation} activeStateIndex={activeStateIndex} clinicalPathology={effectivePathology} pickedTooth={effectiveTooth} />
           )}
@@ -162,6 +171,16 @@ export default function DentalViewer({ scanUrl, scanFormat, simulation, activeSt
           maxDistance={150}
           maxPolarAngle={Math.PI * 0.85}
           target={[0, 0, 0]}
+          // The Rotate / Pan / Zoom toolbar buttons change which
+          // interaction mode is active. We don't disable rotate
+          // entirely on Pan/Zoom because users still want to
+          // re-orient — instead we ENABLE pan only when "pan" is
+          // the active tool, and we tone down rotation speed in
+          // measurement / annotation modes so clicks don't drag.
+          enableRotate={activeTool !== 'pan'}
+          enablePan={activeTool === 'pan'}
+          enableZoom={true}
+          rotateSpeed={['measure', 'annotation', 'section'].includes(activeTool) ? 0.3 : 1.0}
         />
         <Environment preset="studio" environmentIntensity={0.5} />
       </Canvas>
@@ -555,7 +574,7 @@ function makeStainTexture(kind, stage, treatment) {
   return tex;
 }
 
-function TreatmentJourney({ url, format, textureUrl, simulation, activeStateIndex, clinicalPathology, pickedTooth, xRayMode = false }) {
+function TreatmentJourney({ url, format, textureUrl, simulation, activeStateIndex, clinicalPathology, pickedTooth, xRayMode = false, activeTool = 'rotate' }) {
   const meshRef = useRef();
   const [scanMesh, setScanMesh] = useState(null);
   const [geometry, setGeometry] = useState(null);
@@ -703,12 +722,51 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
 
   const isPulsing = ['pulp', 'abscess'].includes(effectiveStage);
 
+  // ── Toolbar-driven state ──
+  //   measurePoints: array of [x,y,z] (max 2, third click resets)
+  //   annotations:   array of { id, pos:[x,y,z], text }
+  //   clipY:         world-Y plane for "Section" tool; null = no clip
+  //   ghost:         boolean — Transparency tool toggle
+  const [measurePoints, setMeasurePoints] = useState([]);
+  const [annotations, setAnnotations] = useState([]);
+  const [clipY, setClipY] = useState(null);
+  const [ghost, setGhost] = useState(false);
+
+  // Active-tool side-effects: entering Transparency / Section toggles their
+  // state on; leaving turns them off. Measure / annotation tools clear
+  // any in-progress measurement when switched out.
+  useEffect(() => {
+    if (activeTool === 'transparency') setGhost(true); else setGhost(false);
+    if (activeTool === 'section' && clipY === null && bbox) setClipY(bbox.topY * 0.4);
+    if (activeTool !== 'section') setClipY(null);
+    if (activeTool !== 'measure') setMeasurePoints([]);
+  }, [activeTool, bbox]);
+
   const handleClickScan = (e) => {
     e.stopPropagation();
     if (!e.face || !e.point || !meshRef.current) return;
     try {
-      setMarkerPos([e.point.x, e.point.y, e.point.z]);
+      const point = [e.point.x, e.point.y, e.point.z];
       const n = e.face.normal.clone().transformDirection(meshRef.current.matrixWorld).normalize();
+
+      // Dispatch by active tool
+      if (activeTool === 'measure') {
+        setMeasurePoints((prev) => prev.length >= 2 ? [point] : [...prev, point]);
+        return;
+      }
+      if (activeTool === 'annotation') {
+        const text = window.prompt('Annotation text:');
+        if (text && text.trim()) {
+          setAnnotations((prev) => [...prev, { id: `a-${Date.now()}`, pos: point, text: text.trim() }]);
+        }
+        return;
+      }
+      if (activeTool === 'section') {
+        setClipY(point[1]);
+        return;
+      }
+      // Default — Rotate / Pan / Zoom / Transparency: place cavity marker
+      setMarkerPos(point);
       setMarkerNormal([n.x, n.y, n.z]);
       setClickPaintedKind('caries');
     } catch (err) {
@@ -855,8 +913,66 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
           metalness={0.03}
           clearcoat={0.1}
           clearcoatRoughness={0.4}
+          transparent={ghost}
+          opacity={ghost ? 0.38 : 1}
+          depthWrite={!ghost}
+          clippingPlanes={clipY != null ? [new THREE.Plane(new THREE.Vector3(0, -1, 0), clipY)] : []}
         />
       </mesh>
+
+      {/* ── Toolbar overlays ───────────────────────────────────── */}
+
+      {/* Section plane indicator — thin teal disc at the cut height */}
+      {clipY != null && bbox && (
+        <mesh position={[0, clipY, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+          <ringGeometry args={[bbox.sizeX * 0.55, bbox.sizeX * 0.58, 64]} />
+          <meshBasicMaterial color="#2cc1ab" transparent opacity={0.7} side={THREE.DoubleSide} />
+        </mesh>
+      )}
+
+      {/* Measure tool — point markers, connecting line, distance label */}
+      {measurePoints.map((p, i) => (
+        <mesh key={`mp-${i}`} position={p}>
+          <sphereGeometry args={[0.35, 16, 12]} />
+          <meshStandardMaterial color="#2cc1ab" emissive="#0e8a7a" emissiveIntensity={0.6} />
+        </mesh>
+      ))}
+      {measurePoints.length === 2 && (
+        <>
+          <Line
+            points={measurePoints}
+            color="#2cc1ab"
+            lineWidth={2}
+            dashed={false}
+          />
+          <Html
+            position={midpoint(measurePoints[0], measurePoints[1])}
+            center
+            distanceFactor={18}
+          >
+            <div className="bg-teal-500 text-black text-[10px] font-bold px-2 py-0.5 rounded shadow-lg whitespace-nowrap pointer-events-none">
+              {distance(measurePoints[0], measurePoints[1]).toFixed(2)} mm
+            </div>
+          </Html>
+        </>
+      )}
+
+      {/* Annotation tool — text labels at clicked points */}
+      {annotations.map((a) => (
+        <group key={a.id}>
+          <mesh position={a.pos}>
+            <sphereGeometry args={[0.25, 12, 10]} />
+            <meshStandardMaterial color="#fbbf24" emissive="#92400e" emissiveIntensity={0.6} />
+          </mesh>
+          <Html position={a.pos} center distanceFactor={18}>
+            <div className="bg-amber-400 text-black text-[10px] font-semibold px-2 py-1 rounded shadow-lg whitespace-nowrap max-w-[180px] truncate pointer-events-auto cursor-pointer"
+                 onClick={() => setAnnotations((prev) => prev.filter((x) => x.id !== a.id))}
+                 title="Click to remove">
+              {a.text}
+            </div>
+          </Html>
+        </group>
+      ))}
 
       {/* Texture hint */}
       {!texture && !hasClinical && (
