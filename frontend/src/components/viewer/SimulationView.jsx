@@ -8,6 +8,7 @@ import ToothAnatomyPanel from './ToothAnatomyPanel';
 import XRayToggle from './XRayToggle';
 import ViewerToolbar from './ViewerToolbar';
 import DiagnosisTabContent from './DiagnosisTabContent';
+import ScanLibrary from './ScanLibrary';
 import { exportCaseReport } from './caseReport';
 import {
   ChevronLeft, ChevronRight, Loader2, ArrowLeft, Play, Pause,
@@ -77,6 +78,9 @@ export default function SimulationView() {
   // Toast feedback for treatment / report actions
   const [toast, setToast] = useState(null);
   const [exporting, setExporting] = useState(false);
+  // Scan Library modal
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [loadedScanLabel, setLoadedScanLabel] = useState(null);
 
   const fileInputRef = useRef(null);
   const textureInputRef = useRef(null);
@@ -222,6 +226,21 @@ export default function SimulationView() {
             </div>
           </div>
           <div className="flex items-center gap-3">
+            {/* Scan Library button — opens the browseable real-patient
+                scan archive (loads from /scans/manifest.json). */}
+            <button
+              onClick={() => setLibraryOpen(true)}
+              className="flex items-center gap-1.5 text-[11px] px-3 py-1.5 rounded-lg border border-teal-400/30 bg-teal-500/10 text-teal-200 hover:bg-teal-500/20 transition"
+              title="Open the anonymized real-patient scan library"
+            >
+              <ImageIcon size={12} />
+              Scan Library
+            </button>
+            {loadedScanLabel && (
+              <span className="text-[10px] text-teal-300 font-medium bg-teal-500/10 border border-teal-400/20 px-2 py-1 rounded-md">
+                ◉ {loadedScanLabel}
+              </span>
+            )}
             {/* Upload mesh button */}
             <input ref={fileInputRef} type="file" accept=".stl,.ply,.obj" className="hidden" onChange={handleFileUpload} />
             <button onClick={() => fileInputRef.current?.click()}
@@ -499,6 +518,21 @@ export default function SimulationView() {
           </div>
         </div>
       )}
+
+      {/* Scan Library modal — browse real anonymized patient scans
+          from /scans/manifest.json. Clicking a scan loads it into the
+          live 3D viewer instantly (no mock data, no upload step). */}
+      <ScanLibrary
+        open={libraryOpen}
+        onClose={() => setLibraryOpen(false)}
+        onLoadScan={(s) => {
+          setScanUrl(s.url);
+          setScanFormat(s.format);
+          setLoadedScanLabel(s.label || s.id);
+          setToast({ type: 'ok', msg: `Loaded: ${s.label || s.id}` });
+          setTimeout(() => setToast(null), 2500);
+        }}
+      />
     </div>
   );
 }

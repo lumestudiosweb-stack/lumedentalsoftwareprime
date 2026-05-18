@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "description": "Anonymized real-patient intraoral scans hosted on Cloudflare R2. See ./README.md for how to add entries.",
+  "scans": []
+}
