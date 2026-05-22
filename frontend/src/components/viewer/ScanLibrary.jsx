@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Search, Filter, FileBox, Loader2, ExternalLink, Database, Inbox } from 'lucide-react';
+import { X, Search, Filter, FileBox, Loader2, Database, Inbox, Sparkles, Eye } from 'lucide-react';
 
 /* ──────────────────────────────────────────────────────────────────────
    ScanLibrary — full-screen modal that lets the user browse all real
@@ -23,7 +23,7 @@ const ARCH_FILTERS = [
   { id: 'unknown', label: 'Unsorted' },
 ];
 
-export default function ScanLibrary({ open, onClose, onLoadScan }) {
+export default function ScanLibrary({ open, onClose, onLoadScan, onSimulate }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [scans, setScans] = useState([]);
@@ -189,6 +189,7 @@ export default function ScanLibrary({ open, onClose, onLoadScan }) {
                   key={s.id}
                   scan={s}
                   onLoad={() => { onLoadScan?.(s); onClose?.(); }}
+                  onSimulate={() => { onSimulate?.(s); onClose?.(); }}
                 />
               ))}
             </div>
@@ -206,7 +207,7 @@ export default function ScanLibrary({ open, onClose, onLoadScan }) {
   );
 }
 
-function ScanCard({ scan, onLoad }) {
+function ScanCard({ scan, onLoad, onSimulate }) {
   const archColor = {
     upper:   'text-sky-300 border-sky-400/30 bg-sky-500/10',
     lower:   'text-amber-300 border-amber-400/30 bg-amber-500/10',
@@ -215,15 +216,21 @@ function ScanCard({ scan, onLoad }) {
   }[scan.arch || 'unknown'];
 
   return (
-    <button
-      onClick={onLoad}
-      className="group bg-surface-2 border border-white/8 hover:border-teal-400/40 rounded-lg overflow-hidden text-left transition shadow-lg hover:shadow-[0_0_20px_rgba(20,184,166,0.20)]"
-    >
-      {/* Thumbnail placeholder — once we batch-render previews, swap to <img>. */}
-      <div className="aspect-[4/3] bg-gradient-to-br from-surface-3 to-surface-1 flex items-center justify-center group-hover:from-teal-500/5 transition">
+    <div className="group bg-surface-2 border border-white/8 hover:border-teal-400/40 rounded-lg overflow-hidden transition shadow-lg hover:shadow-[0_0_20px_rgba(20,184,166,0.20)]">
+      {/* Thumbnail — clicking it launches the flagship Smile Simulator. */}
+      <button
+        onClick={onSimulate}
+        className="block w-full aspect-[4/3] bg-gradient-to-br from-surface-3 to-surface-1 flex items-center justify-center group-hover:from-teal-500/5 transition relative"
+        title="Open in Smile Simulator"
+      >
         <ToothMarkSVG />
-      </div>
-      <div className="p-2 space-y-1">
+        <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition bg-black/40">
+          <span className="flex items-center gap-1.5 text-[11px] font-semibold text-teal-100 bg-teal-500/30 border border-teal-300/40 px-2.5 py-1 rounded-md">
+            <Sparkles size={12} /> Simulate
+          </span>
+        </div>
+      </button>
+      <div className="p-2 space-y-1.5">
         <div className="text-[11px] font-semibold text-white truncate">{scan.label || scan.id}</div>
         <div className="flex items-center justify-between gap-2">
           <span className={`text-[9px] px-1.5 py-0.5 rounded border ${archColor} font-medium`}>
@@ -234,8 +241,23 @@ function ScanCard({ scan, onLoad }) {
         {scan.qualityNote && (
           <div className="text-[9px] text-gray-500">Quality: {scan.qualityNote}</div>
         )}
+        <div className="flex items-center gap-1.5 pt-0.5">
+          <button
+            onClick={onSimulate}
+            className="flex-1 flex items-center justify-center gap-1 text-[10px] font-semibold px-2 py-1.5 rounded-md bg-teal-500/15 border border-teal-400/30 text-teal-100 hover:bg-teal-500/25 transition"
+          >
+            <Sparkles size={11} /> Simulate
+          </button>
+          <button
+            onClick={onLoad}
+            title="Load into the diagnostic viewer"
+            className="flex items-center justify-center gap-1 text-[10px] font-medium px-2 py-1.5 rounded-md border border-white/10 text-gray-400 hover:text-white hover:bg-white/5 transition"
+          >
+            <Eye size={11} /> Viewer
+          </button>
+        </div>
       </div>
-    </button>
+    </div>
   );
 }
 

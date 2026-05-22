@@ -9,10 +9,11 @@ import XRayToggle from './XRayToggle';
 import ViewerToolbar from './ViewerToolbar';
 import DiagnosisTabContent from './DiagnosisTabContent';
 import ScanLibrary from './ScanLibrary';
+import SmileSimulator from './SmileSimulator';
 import { exportCaseReport } from './caseReport';
 import {
   ChevronLeft, ChevronRight, Loader2, ArrowLeft, Play, Pause,
-  Upload, Image as ImageIcon, Activity, Layers, Stethoscope, Maximize2, Info,
+  Upload, Image as ImageIcon, Activity, Layers, Stethoscope, Maximize2, Info, Sparkles,
 } from 'lucide-react';
 
 /* ──────────────────────────────────────────────────────────────────────
@@ -81,6 +82,9 @@ export default function SimulationView() {
   // Scan Library modal
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [loadedScanLabel, setLoadedScanLabel] = useState(null);
+  // Smile Simulator modal (flagship before/after whitening on real scans)
+  const [simulatorOpen, setSimulatorOpen] = useState(false);
+  const [simScan, setSimScan] = useState(null);
 
   const fileInputRef = useRef(null);
   const textureInputRef = useRef(null);
@@ -236,6 +240,27 @@ export default function SimulationView() {
               <ImageIcon size={12} />
               Scan Library
             </button>
+            {/* Smile Simulator — flagship before/after whitening on the
+                currently loaded scan. Only shown once a mesh is loaded. */}
+            {scanUrl && (
+              <button
+                onClick={() => {
+                  setSimScan({
+                    id: 'current',
+                    url: scanUrl,
+                    format: scanFormat,
+                    textureUrl: textureUrl || null,
+                    label: loadedScanLabel || 'Loaded scan',
+                  });
+                  setSimulatorOpen(true);
+                }}
+                className="flex items-center gap-1.5 text-[11px] px-3 py-1.5 rounded-lg border border-teal-300/40 bg-gradient-to-r from-teal-500/20 to-sky-500/15 text-teal-100 hover:from-teal-500/30 transition"
+                title="Open the before/after Smile Simulator on the loaded scan"
+              >
+                <Sparkles size={12} />
+                Smile Simulator
+              </button>
+            )}
             {loadedScanLabel && (
               <span className="text-[10px] text-teal-300 font-medium bg-teal-500/10 border border-teal-400/20 px-2 py-1 rounded-md">
                 ◉ {loadedScanLabel}
@@ -541,6 +566,20 @@ export default function SimulationView() {
           setToast({ type: 'ok', msg: `Loaded: ${s.label || s.id}` });
           setTimeout(() => setToast(null), 2500);
         }}
+        onSimulate={(s) => {
+          // Launch the flagship Smile Simulator straight from a library card.
+          setSimScan(s);
+          setSimulatorOpen(true);
+        }}
+      />
+
+      {/* Smile Simulator — real-time before/after teeth whitening on the
+          patient's own scan, with a draggable divider. Rendered at the page
+          root as a full-screen portal so it sits above everything. */}
+      <SmileSimulator
+        open={simulatorOpen}
+        scan={simScan}
+        onClose={() => setSimulatorOpen(false)}
       />
     </div>
   );
