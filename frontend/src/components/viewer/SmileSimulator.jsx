@@ -134,14 +134,15 @@ function WhiteningMesh({ geometry, texture, flipped, splitRef, whitenRef, previe
     const m = new THREE.MeshPhysicalMaterial({
       map: texture || null,
       color: 0xffffff,
-      // Wet enamel + saliva sheen: low roughness under a strong clear coat
-      // with bright environment reflections. This is what reads as "shiny
-      // real scan" instead of "matte plaster cast".
-      roughness: 0.3,
+      // Show the REAL scan texture faithfully (the scanner already baked
+      // the true colour + lighting + wet highlights into it — same texture
+      // Helios displays). We do NOT re-light or re-colour it; a faint clear
+      // coat adds just a touch of live saliva sheen on top.
+      roughness: 0.4,
       metalness: 0.0,
-      clearcoat: 1.0,
-      clearcoatRoughness: 0.06,
-      envMapIntensity: 1.35,
+      clearcoat: 0.55,
+      clearcoatRoughness: 0.12,
+      envMapIntensity: 0.6,
     });
     m.onBeforeCompile = (shader) => {
       shader.uniforms.uSplit = { value: splitRef.current };
@@ -187,12 +188,14 @@ function WhiteningMesh({ geometry, texture, flipped, splitRef, whitenRef, previe
 function Scene({ geometry, texture, flipped, controlsRef, splitRef, whitenRef, previewAllRef }) {
   return (
     <>
-      <hemisphereLight args={['#ffffff', '#39414f', 0.5]} />
-      <ambientLight intensity={0.22} />
-      <directionalLight position={[6, 14, 10]} intensity={1.5} color="#ffffff" />
-      <directionalLight position={[-8, 6, 3]} intensity={0.5} color="#dce9ff" />
-      <pointLight position={[0, -4, 14]} intensity={0.35} color="#fff2e6" />
-      <Environment preset="studio" environmentIntensity={0.85} />
+      {/* Neutral WHITE, flat lighting only — no coloured lights, so the
+          scan's own baked colour shows through exactly as captured. This is
+          the difference between "the real Helios colours" and a tinted,
+          re-lit render. The Environment is kept low and is mainly there to
+          give the clear coat something neutral to reflect (the wet glint). */}
+      <ambientLight intensity={0.72} />
+      <directionalLight position={[4, 12, 8]} intensity={0.32} color="#ffffff" />
+      <Environment preset="studio" environmentIntensity={0.4} />
 
       <WhiteningMesh
         geometry={geometry}
@@ -463,7 +466,10 @@ export default function SmileSimulator({ open, scan, onClose }) {
         {ready && (
           <Canvas
             camera={{ position: [0, 9, 46], fov: 32, near: 0.1, far: 1000 }}
-            gl={{ antialias: true, alpha: true, toneMapping: THREE.ACESFilmicToneMapping, toneMappingExposure: 1.0 }}
+            // NoToneMapping = the texture's real sRGB colours pass straight
+            // through (ACES filmic was warming/desaturating them). This is
+            // what makes it match the Helios capture.
+            gl={{ antialias: true, alpha: true, toneMapping: THREE.NoToneMapping, toneMappingExposure: 1.0 }}
             dpr={[1, 2]}
           >
             <Scene
