@@ -140,11 +140,11 @@ function WhiteningMesh({ geometry, texture, flipped, splitRef, whitenRef, previe
       // clear coat reflecting a neutral environment. Those highlights are
       // pure white, so they sit ON TOP of the real colour without tinting
       // it — that's how Helios looks shiny yet true-to-life.
-      roughness: 0.25,
+      roughness: 0.28,
       metalness: 0.0,
       clearcoat: 1.0,
-      clearcoatRoughness: 0.05,
-      envMapIntensity: 1.1,
+      clearcoatRoughness: 0.06,
+      envMapIntensity: 0.85,
     });
     m.onBeforeCompile = (shader) => {
       shader.uniforms.uSplit = { value: splitRef.current };
@@ -466,14 +466,15 @@ export default function SmileSimulator({ open, scan, onClose }) {
 
       {/* Stage */}
       <div ref={stageRef} className="relative flex-1 min-h-0 overflow-hidden"
-        style={{ background: 'radial-gradient(ellipse at 50% 42%, #f6f7f9 0%, #e7e9ee 58%, #d6dae2 100%)' }}>
+        style={{ background: 'radial-gradient(ellipse at 50% 42%, #20242c 0%, #101319 58%, #07080c 100%)' }}>
         {ready && (
           <Canvas
             camera={{ position: [0, 9, 46], fov: 32, near: 0.1, far: 1000 }}
-            // NoToneMapping = the texture's real sRGB colours pass straight
-            // through (ACES filmic was warming/desaturating them). This is
-            // what makes it match the Helios capture.
-            gl={{ antialias: true, alpha: true, toneMapping: THREE.NoToneMapping, toneMappingExposure: 1.0 }}
+            // NeutralToneMapping (Khronos PBR Neutral): keeps the texture's
+            // real colours accurate (unlike ACES, which warms/desaturates)
+            // while gently rolling the brightest specular highlights to white
+            // instead of hard-clipping them to chalk (the washed-out look).
+            gl={{ antialias: true, alpha: true, toneMapping: THREE.NeutralToneMapping, toneMappingExposure: 1.0 }}
             dpr={[1, 2]}
           >
             <Scene
