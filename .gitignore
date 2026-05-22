@@ -28,6 +28,17 @@ frontend/public/teeth/**/*.jpeg
 !frontend/public/teeth/**/normal.png
 !frontend/public/teeth/**/ao.png
 !frontend/public/teeth/**/ao.jpeg
+
+# Anonymized demo scan library — allow the committed PLY meshes + their
+# paired JPG colour textures. (For >50 scans use Cloudflare R2 instead;
+# committing 100s of MB of PLY to git is not sustainable.)
+!frontend/public/scans/meshes/*.ply
+!frontend/public/scans/meshes/*.jpg
+
+# RAW patient scan zips (contain patient names + ordersheet PDFs with PII).
+# NEVER commit these — only the anonymized meshes in public/scans/meshes.
+STL PLY SCANS/
+*_ordersheet.pdf
 uploads/
 temp/
 *.log

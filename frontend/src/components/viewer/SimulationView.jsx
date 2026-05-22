@@ -528,6 +528,15 @@ export default function SimulationView() {
         onLoadScan={(s) => {
           setScanUrl(s.url);
           setScanFormat(s.format);
+          // Real intraoral scans ship a paired JPG colour texture — load
+          // it so the scan renders with its actual gum + tooth colour.
+          if (s.textureUrl) {
+            setTextureUrl(s.textureUrl);
+            setTextureName(`${s.label || s.id} texture`);
+          } else {
+            setTextureUrl(null);
+            setTextureName(null);
+          }
           setLoadedScanLabel(s.label || s.id);
           setToast({ type: 'ok', msg: `Loaded: ${s.label || s.id}` });
           setTimeout(() => setToast(null), 2500);

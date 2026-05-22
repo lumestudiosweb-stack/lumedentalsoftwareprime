@@ -1,5 +1,69 @@
 {
   "version": 1,
-  "description": "Anonymized real-patient intraoral scans hosted on Cloudflare R2. See ./README.md for how to add entries.",
-  "scans": []
+  "description": "Anonymized real-patient intraoral scans. Patient identifiers stripped; ordersheet PDFs discarded. For >50 scans, host on Cloudflare R2 instead of committing to git (see README.md).",
+  "scans": [
+    {
+      "id": "scan_0001_upper",
+      "url": "/scans/meshes/scan_0001_upper.ply",
+      "textureUrl": "/scans/meshes/scan_0001_upper.jpg",
+      "format": "ply",
+      "arch": "upper",
+      "label": "Case 01 — Upper",
+      "addedAt": "2026-05-23"
+    },
+    {
+      "id": "scan_0002_upper",
+      "url": "/scans/meshes/scan_0002_upper.ply",
+      "textureUrl": "/scans/meshes/scan_0002_upper.jpg",
+      "format": "ply",
+      "arch": "upper",
+      "label": "Case 02 — Upper",
+      "addedAt": "2026-05-23"
+    },
+    {
+      "id": "scan_0002_lower",
+      "url": "/scans/meshes/scan_0002_lower.ply",
+      "textureUrl": "/scans/meshes/scan_0002_lower.jpg",
+      "format": "ply",
+      "arch": "lower",
+      "label": "Case 02 — Lower",
+      "addedAt": "2026-05-23"
+    },
+    {
+      "id": "scan_0003_upper",
+      "url": "/scans/meshes/scan_0003_upper.ply",
+      "textureUrl": "/scans/meshes/scan_0003_upper.jpg",
+      "format": "ply",
+      "arch": "upper",
+      "label": "Case 03 — Upper",
+      "addedAt": "2026-05-23"
+    },
+    {
+      "id": "scan_0003_lower",
+      "url": "/scans/meshes/scan_0003_lower.ply",
+      "textureUrl": "/scans/meshes/scan_0003_lower.jpg",
+      "format": "ply",
+      "arch": "lower",
+      "label": "Case 03 — Lower",
+      "addedAt": "2026-05-23"
+    },
+    {
+      "id": "scan_0004_upper",
+      "url": "/scans/meshes/scan_0004_upper.ply",
+      "textureUrl": "/scans/meshes/scan_0004_upper.jpg",
+      "format": "ply",
+      "arch": "upper",
+      "label": "Case 04 — Upper",
+      "addedAt": "2026-05-23"
+    },
+    {
+      "id": "scan_0005_upper",
+      "url": "/scans/meshes/scan_0005_upper.ply",
+      "textureUrl": "/scans/meshes/scan_0005_upper.jpg",
+      "format": "ply",
+      "arch": "upper",
+      "label": "Case 05 — Upper",
+      "addedAt": "2026-05-23"
+    }
+  ]
 }
