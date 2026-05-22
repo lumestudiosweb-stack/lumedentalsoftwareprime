@@ -50,14 +50,18 @@ const GLSL_HELPERS = /* glsl */`
     return clamp(dark * (1.0 - gum), 0.0, 1.0);
   }
 
-  // Whiten = desaturate the yellow + lift toward white + neutralise the
-  // blue deficit that makes enamel read as yellow. Tuned to look like a
-  // few shades up the VITA guide, not bleach-white.
+  // Whiten WITHOUT going chalky. The trick: remove the yellow CHROMA while
+  // preserving each pixel's own luminance — so the baked highlights stay
+  // bright and the tooth body stays slightly darker (i.e. the enamel keeps
+  // its shape and depth). Brightening is a gamma curve, NOT a lift toward
+  // white, because a linear lift compresses highlights into the body and
+  // makes teeth look like flat matte paint. The wet GLOSS itself comes from
+  // the material's clearcoat/specular, not from the albedo.
   vec3 _whiten(vec3 s, float amt){
     float l = dot(s, vec3(0.299, 0.587, 0.114));
-    vec3 c = mix(s, vec3(l), 0.30 * amt);            // pull out the yellow tint
-    c = c + (1.0 - c) * (0.20 * amt);                // soft lift toward white
-    c.b = mix(c.b, c.b + (1.0 - c.b) * 0.55, amt);   // raise blue -> neutral white
+    vec3 c = mix(s, vec3(l), 0.55 * amt);             // strip the yellow, keep luminance/contrast
+    c.b = mix(c.b, max(c.b, c.g * 0.97), 0.5 * amt);  // neutralise residual yellow
+    c = pow(max(c, 0.0), vec3(1.0 - 0.20 * amt));     // gamma brighten (highlights stay crisp)
     return clamp(c, 0.0, 1.0);
   }
 `;
@@ -130,10 +134,14 @@ function WhiteningMesh({ geometry, texture, flipped, splitRef, whitenRef, previe
     const m = new THREE.MeshPhysicalMaterial({
       map: texture || null,
       color: 0xffffff,
-      roughness: 0.5,
+      // Wet enamel + saliva sheen: low roughness under a strong clear coat
+      // with bright environment reflections. This is what reads as "shiny
+      // real scan" instead of "matte plaster cast".
+      roughness: 0.3,
       metalness: 0.0,
-      clearcoat: 0.18,
-      clearcoatRoughness: 0.32,
+      clearcoat: 1.0,
+      clearcoatRoughness: 0.06,
+      envMapIntensity: 1.35,
     });
     m.onBeforeCompile = (shader) => {
       shader.uniforms.uSplit = { value: splitRef.current };
@@ -179,11 +187,12 @@ function WhiteningMesh({ geometry, texture, flipped, splitRef, whitenRef, previe
 function Scene({ geometry, texture, flipped, controlsRef, splitRef, whitenRef, previewAllRef }) {
   return (
     <>
-      <ambientLight intensity={0.55} />
-      <directionalLight position={[8, 18, 14]} intensity={1.25} color="#ffffff" />
-      <directionalLight position={[-10, 8, -6]} intensity={0.4} color="#dce7ff" />
-      <pointLight position={[0, -6, 16]} intensity={0.3} color="#fff2e6" />
-      <Environment preset="studio" environmentIntensity={0.55} />
+      <hemisphereLight args={['#ffffff', '#39414f', 0.5]} />
+      <ambientLight intensity={0.22} />
+      <directionalLight position={[6, 14, 10]} intensity={1.5} color="#ffffff" />
+      <directionalLight position={[-8, 6, 3]} intensity={0.5} color="#dce9ff" />
+      <pointLight position={[0, -4, 14]} intensity={0.35} color="#fff2e6" />
+      <Environment preset="studio" environmentIntensity={0.85} />
 
       <WhiteningMesh
         geometry={geometry}
@@ -208,20 +217,20 @@ function Scene({ geometry, texture, flipped, controlsRef, splitRef, whitenRef, p
 }
 
 const SHADE_PRESETS = [
-  { id: 'natural',   label: 'Natural',   sub: 'A2 · subtle',    value: 0.35 },
-  { id: 'bright',    label: 'Bright',    sub: 'A1 · noticeable', value: 0.62 },
-  { id: 'hollywood', label: 'Hollywood', sub: 'BL2 · max',      value: 0.92 },
+  { id: 'natural',   label: 'Natural',   sub: 'A2 · subtle',     value: 0.3 },
+  { id: 'bright',    label: 'Bright',    sub: 'A1 · noticeable', value: 0.55 },
+  { id: 'hollywood', label: 'Hollywood', sub: 'BL2 · max',       value: 0.82 },
 ];
 
 export default function SmileSimulator({ open, scan, onClose }) {
   // Live values read by the shader (refs avoid per-frame re-renders).
   const splitRef = useRef(0.5);
-  const whitenRef = useRef(0.62);
+  const whitenRef = useRef(0.55);
   const previewAllRef = useRef(false);
 
   // UI mirrors of the above (low-frequency, for the DOM only).
   const [splitUI, setSplitUI] = useState(0.5);
-  const [whitenPct, setWhitenPct] = useState(62);
+  const [whitenPct, setWhitenPct] = useState(55);
   const [previewAll, setPreviewAll] = useState(false);
   const [activeShade, setActiveShade] = useState('bright');
   const [flipped, setFlipped] = useState(false);
@@ -328,7 +337,7 @@ export default function SmileSimulator({ open, scan, onClose }) {
   useEffect(() => {
     if (!open) return;
     applySplit(0.5);
-    applyWhiten(62);
+    applyWhiten(55);
     setActiveShade('bright');
     setPreviewAll(false);
     previewAllRef.current = false;
@@ -454,7 +463,7 @@ export default function SmileSimulator({ open, scan, onClose }) {
         {ready && (
           <Canvas
             camera={{ position: [0, 9, 46], fov: 32, near: 0.1, far: 1000 }}
-            gl={{ antialias: true, alpha: true, toneMapping: THREE.ACESFilmicToneMapping, toneMappingExposure: 1.12 }}
+            gl={{ antialias: true, alpha: true, toneMapping: THREE.ACESFilmicToneMapping, toneMappingExposure: 1.0 }}
             dpr={[1, 2]}
           >
             <Scene
