@@ -134,15 +134,17 @@ function WhiteningMesh({ geometry, texture, flipped, splitRef, whitenRef, previe
     const m = new THREE.MeshPhysicalMaterial({
       map: texture || null,
       color: 0xffffff,
-      // Show the REAL scan texture faithfully (the scanner already baked
-      // the true colour + lighting + wet highlights into it — same texture
-      // Helios displays). We do NOT re-light or re-colour it; a faint clear
-      // coat adds just a touch of live saliva sheen on top.
-      roughness: 0.4,
+      // Faithful texture colour + wet saliva sheen. The colour comes
+      // straight from the scan (neutral white lights, no tone-map shift);
+      // the WET GLINTS come from a low-roughness surface under a strong
+      // clear coat reflecting a neutral environment. Those highlights are
+      // pure white, so they sit ON TOP of the real colour without tinting
+      // it — that's how Helios looks shiny yet true-to-life.
+      roughness: 0.25,
       metalness: 0.0,
-      clearcoat: 0.55,
-      clearcoatRoughness: 0.12,
-      envMapIntensity: 0.6,
+      clearcoat: 1.0,
+      clearcoatRoughness: 0.05,
+      envMapIntensity: 1.1,
     });
     m.onBeforeCompile = (shader) => {
       shader.uniforms.uSplit = { value: splitRef.current };
@@ -188,14 +190,16 @@ function WhiteningMesh({ geometry, texture, flipped, splitRef, whitenRef, previe
 function Scene({ geometry, texture, flipped, controlsRef, splitRef, whitenRef, previewAllRef }) {
   return (
     <>
-      {/* Neutral WHITE, flat lighting only — no coloured lights, so the
-          scan's own baked colour shows through exactly as captured. This is
-          the difference between "the real Helios colours" and a tinted,
-          re-lit render. The Environment is kept low and is mainly there to
-          give the clear coat something neutral to reflect (the wet glint). */}
-      <ambientLight intensity={0.72} />
-      <directionalLight position={[4, 12, 8]} intensity={0.32} color="#ffffff" />
-      <Environment preset="studio" environmentIntensity={0.4} />
+      {/* All lights are pure WHITE — no colour cast, so the scan's baked
+          colour reads true (the earlier coloured fills were corrupting it).
+          Ambient + hemisphere keep the colour readable everywhere; the key
+          light + studio Environment give the glossy clear coat bright,
+          neutral things to reflect → the wet specular glints. */}
+      <ambientLight intensity={0.42} />
+      <hemisphereLight args={['#ffffff', '#e9ebef', 0.22]} />
+      <directionalLight position={[5, 13, 9]} intensity={0.5} color="#ffffff" />
+      <directionalLight position={[-6, 7, 4]} intensity={0.18} color="#ffffff" />
+      <Environment preset="studio" environmentIntensity={0.5} />
 
       <WhiteningMesh
         geometry={geometry}
@@ -462,7 +466,7 @@ export default function SmileSimulator({ open, scan, onClose }) {
 
       {/* Stage */}
       <div ref={stageRef} className="relative flex-1 min-h-0 overflow-hidden"
-        style={{ background: 'radial-gradient(ellipse at 50% 35%, #11203a 0%, #060a14 55%, #03050b 100%)' }}>
+        style={{ background: 'radial-gradient(ellipse at 50% 42%, #f6f7f9 0%, #e7e9ee 58%, #d6dae2 100%)' }}>
         {ready && (
           <Canvas
             camera={{ position: [0, 9, 46], fov: 32, near: 0.1, far: 1000 }}
@@ -488,12 +492,12 @@ export default function SmileSimulator({ open, scan, onClose }) {
         {ready && !previewAll && (
           <>
             <div className="absolute top-4 left-4 pointer-events-none select-none">
-              <span className="text-[11px] font-bold tracking-widest px-2.5 py-1 rounded-md bg-black/55 text-gray-300 border border-white/10">
+              <span className="text-[11px] font-bold tracking-widest px-2.5 py-1 rounded-md bg-gray-900/80 text-white shadow-md">
                 BEFORE
               </span>
             </div>
             <div className="absolute top-4 right-4 pointer-events-none select-none">
-              <span className="text-[11px] font-bold tracking-widest px-2.5 py-1 rounded-md bg-teal-500/25 text-teal-100 border border-teal-300/40">
+              <span className="text-[11px] font-bold tracking-widest px-2.5 py-1 rounded-md bg-teal-500 text-white shadow-md">
                 AFTER
               </span>
             </div>
@@ -501,7 +505,7 @@ export default function SmileSimulator({ open, scan, onClose }) {
         )}
         {ready && previewAll && (
           <div className="absolute top-4 left-1/2 -translate-x-1/2 pointer-events-none select-none">
-            <span className="text-[11px] font-bold tracking-widest px-2.5 py-1 rounded-md bg-teal-500/25 text-teal-100 border border-teal-300/40">
+            <span className="text-[11px] font-bold tracking-widest px-2.5 py-1 rounded-md bg-teal-500 text-white shadow-md">
               WHITENED · FULL PREVIEW
             </span>
           </div>
@@ -516,8 +520,8 @@ export default function SmileSimulator({ open, scan, onClose }) {
             onPointerDown={onDividerDown}
             onTouchStart={onDividerDown}
           >
-            <div className="absolute top-0 bottom-0 left-1/2 -translate-x-1/2 w-0.5 bg-white/80 shadow-[0_0_10px_rgba(255,255,255,0.5)]" />
-            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-9 h-9 rounded-full bg-white shadow-lg flex items-center justify-center">
+            <div className="absolute top-0 bottom-0 left-1/2 -translate-x-1/2 w-0.5 bg-white" style={{ boxShadow: '0 0 0 1px rgba(15,23,42,0.35), 0 0 10px rgba(15,23,42,0.18)' }} />
+            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-9 h-9 rounded-full bg-white border border-gray-300 shadow-lg flex items-center justify-center">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" className="text-surface-0">
                 <path d="M9 6L4 12L9 18" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
                 <path d="M15 6L20 12L15 18" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
