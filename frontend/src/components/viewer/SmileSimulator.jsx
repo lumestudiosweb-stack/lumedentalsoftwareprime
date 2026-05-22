@@ -134,17 +134,18 @@ function WhiteningMesh({ geometry, texture, flipped, splitRef, whitenRef, previe
     const m = new THREE.MeshPhysicalMaterial({
       map: texture || null,
       color: 0xffffff,
-      // Faithful texture colour + wet saliva sheen. The colour comes
-      // straight from the scan (neutral white lights, no tone-map shift);
-      // the WET GLINTS come from a low-roughness surface under a strong
-      // clear coat reflecting a neutral environment. Those highlights are
-      // pure white, so they sit ON TOP of the real colour without tinting
-      // it — that's how Helios looks shiny yet true-to-life.
-      roughness: 0.28,
+      // The WET "sweaty" saliva sheen the real scan has: a very smooth
+      // surface under a max clear coat reflecting a bright neutral
+      // environment. Low roughness => sharp, moist-looking glints that
+      // travel across the teeth AND gums as you orbit. Highlights are pure
+      // white (PBR-Neutral tone-maps them gracefully), so they read as
+      // moisture on top of the real colour, not as a colour change.
+      roughness: 0.16,
       metalness: 0.0,
       clearcoat: 1.0,
-      clearcoatRoughness: 0.06,
-      envMapIntensity: 0.85,
+      clearcoatRoughness: 0.03,
+      envMapIntensity: 1.6,
+      specularIntensity: 1.0,
     });
     m.onBeforeCompile = (shader) => {
       shader.uniforms.uSplit = { value: splitRef.current };
@@ -195,11 +196,11 @@ function Scene({ geometry, texture, flipped, controlsRef, splitRef, whitenRef, p
           Ambient + hemisphere keep the colour readable everywhere; the key
           light + studio Environment give the glossy clear coat bright,
           neutral things to reflect → the wet specular glints. */}
-      <ambientLight intensity={0.42} />
-      <hemisphereLight args={['#ffffff', '#e9ebef', 0.22]} />
-      <directionalLight position={[5, 13, 9]} intensity={0.5} color="#ffffff" />
-      <directionalLight position={[-6, 7, 4]} intensity={0.18} color="#ffffff" />
-      <Environment preset="studio" environmentIntensity={0.5} />
+      <ambientLight intensity={0.3} />
+      <hemisphereLight args={['#ffffff', '#e9ebef', 0.18]} />
+      <directionalLight position={[5, 13, 9]} intensity={0.55} color="#ffffff" />
+      <directionalLight position={[-6, 7, 4]} intensity={0.2} color="#ffffff" />
+      <Environment preset="studio" environmentIntensity={0.8} />
 
       <WhiteningMesh
         geometry={geometry}
@@ -466,7 +467,7 @@ export default function SmileSimulator({ open, scan, onClose }) {
 
       {/* Stage */}
       <div ref={stageRef} className="relative flex-1 min-h-0 overflow-hidden"
-        style={{ background: 'radial-gradient(ellipse at 50% 42%, #20242c 0%, #101319 58%, #07080c 100%)' }}>
+        style={{ background: 'radial-gradient(ellipse at 50% 35%, #11203a 0%, #060a14 55%, #03050b 100%)' }}>
         {ready && (
           <Canvas
             camera={{ position: [0, 9, 46], fov: 32, near: 0.1, far: 1000 }}
