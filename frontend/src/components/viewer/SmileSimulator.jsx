@@ -8,7 +8,7 @@ import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import {
   X, Sparkles, Play, Pause, RotateCcw, FlipVertical2,
-  Loader2, AlertTriangle, Sun, Eye,
+  Loader2, AlertTriangle, Sun, Eye, Settings, Droplets,
 } from 'lucide-react';
 
 /* ──────────────────────────────────────────────────────────────────────
@@ -126,7 +126,7 @@ function reorientAndFrame(geo) {
 /* The whitening mesh — single static mesh, single material. Reads the live
    split / whiten values from refs each frame so dragging the divider never
    re-renders the React tree or recompiles the shader. */
-function WhiteningMesh({ geometry, texture, flipped, splitRef, whitenRef, previewAllRef }) {
+function WhiteningMesh({ geometry, texture, flipped, splitRef, whitenRef, previewAllRef, wetRef, reflectRef, brightRef }) {
   const { gl } = useThree();
   const uniformsRef = useRef(null);
 
@@ -170,13 +170,25 @@ function WhiteningMesh({ geometry, texture, flipped, splitRef, whitenRef, previe
   }, [texture, splitRef, whitenRef, previewAllRef]);
 
   useFrame(() => {
+    // ── Live realism tuning (read from refs so sliders update the look
+    //    instantly without re-rendering React or recompiling the shader).
+    //    These are all uniform/renderer updates — cheap every frame. ──
+    const wet = wetRef.current;        // 0..1  (0 = dry/matte, 1 = very wet)
+    material.roughness = THREE.MathUtils.lerp(0.5, 0.07, wet);
+    material.clearcoat = THREE.MathUtils.lerp(0.25, 1.0, wet);     // stays > 0 (no recompile)
+    material.clearcoatRoughness = THREE.MathUtils.lerp(0.22, 0.025, wet);
+    material.envMapIntensity = reflectRef.current * 2.0;           // 0..2
+    gl.toneMappingExposure = 0.6 + brightRef.current * 1.0;        // 0.6..1.6
+
+    // ── Whitening / split shader uniforms (once the shader has compiled) ──
     const u = uniformsRef.current;
-    if (!u) return;
-    u.uSplit.value = splitRef.current;
-    u.uWhiten.value = whitenRef.current;
-    u.uPreviewAll.value = previewAllRef.current ? 1 : 0;
-    // gl_FragCoord is in physical pixels → use the drawing-buffer width.
-    u.uResX.value = gl.domElement.width;
+    if (u) {
+      u.uSplit.value = splitRef.current;
+      u.uWhiten.value = whitenRef.current;
+      u.uPreviewAll.value = previewAllRef.current ? 1 : 0;
+      // gl_FragCoord is in physical pixels → use the drawing-buffer width.
+      u.uResX.value = gl.domElement.width;
+    }
   });
 
   return (
@@ -188,7 +200,7 @@ function WhiteningMesh({ geometry, texture, flipped, splitRef, whitenRef, previe
   );
 }
 
-function Scene({ geometry, texture, flipped, controlsRef, splitRef, whitenRef, previewAllRef }) {
+function Scene({ geometry, texture, flipped, controlsRef, splitRef, whitenRef, previewAllRef, wetRef, reflectRef, brightRef }) {
   return (
     <>
       {/* All lights are pure WHITE — no colour cast, so the scan's baked
@@ -209,6 +221,9 @@ function Scene({ geometry, texture, flipped, controlsRef, splitRef, whitenRef, p
         splitRef={splitRef}
         whitenRef={whitenRef}
         previewAllRef={previewAllRef}
+        wetRef={wetRef}
+        reflectRef={reflectRef}
+        brightRef={brightRef}
       />
 
       <OrbitControls
@@ -242,6 +257,17 @@ export default function SmileSimulator({ open, scan, onClose }) {
   const [previewAll, setPreviewAll] = useState(false);
   const [activeShade, setActiveShade] = useState('bright');
   const [flipped, setFlipped] = useState(false);
+
+  // ── Live realism dials (read by the mesh each frame). Because I can't
+  //    see the render while building, these let the user tune the exact
+  //    look in real time instead of waiting on a redeploy. 0..1 each. ──
+  const wetRef = useRef(0.7);      // surface wetness/gloss
+  const reflectRef = useRef(0.5);  // reflection strength (-> envMapIntensity 0..2)
+  const brightRef = useRef(0.4);   // exposure (-> 0.6..1.6)
+  const [wetPct, setWetPct] = useState(70);
+  const [reflectPct, setReflectPct] = useState(50);
+  const [brightPct, setBrightPct] = useState(40);
+  const [showSettings, setShowSettings] = useState(false);
 
   const [geometry, setGeometry] = useState(null);
   const [texture, setTexture] = useState(null);
@@ -486,6 +512,9 @@ export default function SmileSimulator({ open, scan, onClose }) {
               splitRef={splitRef}
               whitenRef={whitenRef}
               previewAllRef={previewAllRef}
+              wetRef={wetRef}
+              reflectRef={reflectRef}
+              brightRef={brightRef}
             />
           </Canvas>
         )}
@@ -550,9 +579,42 @@ export default function SmileSimulator({ open, scan, onClose }) {
           </div>
         )}
 
-        {/* View controls (top-right of stage) */}
+        {/* Live realism panel — tune the look in real time */}
+        {ready && showSettings && (
+          <div className="absolute bottom-16 right-4 w-60 bg-surface-1/95 backdrop-blur border border-white/12 rounded-xl shadow-2xl p-3.5 space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-semibold text-white flex items-center gap-1.5">
+                <Settings size={12} className="text-teal-300" /> Realism
+              </span>
+              <span className="text-[9px] text-gray-500">live · drag to taste</span>
+            </div>
+            <RealismSlider
+              icon={<Droplets size={12} className="text-sky-300" />}
+              label="Wetness" value={wetPct}
+              onChange={(v) => { wetRef.current = v / 100; setWetPct(v); }}
+            />
+            <RealismSlider
+              icon={<Sparkles size={12} className="text-teal-300" />}
+              label="Reflections" value={reflectPct}
+              onChange={(v) => { reflectRef.current = v / 100; setReflectPct(v); }}
+            />
+            <RealismSlider
+              icon={<Sun size={12} className="text-amber-300" />}
+              label="Brightness" value={brightPct}
+              onChange={(v) => { brightRef.current = v / 100; setBrightPct(v); }}
+            />
+            <div className="text-[9px] text-gray-500 leading-relaxed pt-0.5 border-t border-white/8">
+              Found the look? Tell me the three numbers and I’ll make them the default.
+            </div>
+          </div>
+        )}
+
+        {/* View controls (bottom-right of stage) */}
         {ready && (
           <div className="absolute bottom-4 right-4 flex items-center gap-2">
+            <StageBtn title="Realism settings" onClick={() => setShowSettings((v) => !v)} active={showSettings}>
+              <Settings size={15} />
+            </StageBtn>
             <StageBtn title="Flip arch up/down" onClick={() => setFlipped((v) => !v)} active={flipped}>
               <FlipVertical2 size={15} />
             </StageBtn>
@@ -656,5 +718,23 @@ function StageBtn({ children, title, onClick, active }) {
     >
       {children}
     </button>
+  );
+}
+
+function RealismSlider({ icon, label, value, onChange }) {
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <span className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-gray-400">
+          {icon}{label}
+        </span>
+        <span className="text-[10px] font-semibold text-teal-200 tabular-nums">{value}%</span>
+      </div>
+      <input
+        type="range" min={0} max={100} value={value}
+        onChange={(e) => onChange(parseInt(e.target.value, 10))}
+        className="w-full accent-teal-400"
+      />
+    </div>
   );
 }
