@@ -1,14 +1,14 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
-import { OrbitControls, Environment } from '@react-three/drei';
+import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import {
   X, Sparkles, Play, Pause, RotateCcw, FlipVertical2,
-  Loader2, AlertTriangle, Sun, Eye, Settings, Droplets,
+  Loader2, AlertTriangle, Sun, Eye, Settings,
 } from 'lucide-react';
 
 /* ──────────────────────────────────────────────────────────────────────
@@ -131,22 +131,28 @@ function WhiteningMesh({ geometry, texture, flipped, splitRef, whitenRef, previe
   const uniformsRef = useRef(null);
 
   const material = useMemo(() => {
-    // PBR with ENVIRONMENT-ONLY specular. Confirmed: Helios computes live
-    // specular (the wet highlights move as you orbit). Previous PBR attempts
-    // looked plastic because directional point-source lights produced sharp
-    // CG glints; Helios's wet highlights are broad and soft, which is the
-    // signature of HDR-environment-only lighting. So the Scene below has
-    // NO directional lights — the studio HDR is the sole specular source.
-    // The slider lerps below also clamp the wet range so even at 100% it
-    // stays "wet & soft", never "plastic mirror".
-    const m = new THREE.MeshPhysicalMaterial({
+    // EXACTLY what Helios uses. The .mtl file the scanner exports reveals:
+    //
+    //   newmtl defmtl
+    //     Ka 1 1 1     # ambient white
+    //     Kd 1 1 1     # diffuse white
+    //     Tr 0
+    //     map_Kd upper.jpg
+    //     illum 1      # << "color on, ambient on, NO specular"
+    //
+    // illum 1 is plain Lambert diffuse — no specular, no clearcoat, no
+    // reflections. The "highlights" the user sees moving as they orbit in
+    // Helios are not specular at all; they're the diffuse Lambert gradient
+    // (the lit side of the curved surface) travelling as the model rotates
+    // relative to the light. Every PBR thing I added (clearcoat, env
+    // reflections, specular glints) was synthetic CG that Helios does NOT
+    // do — that's why nothing matched.
+    //
+    // MeshLambertMaterial = pure Lambert diffuse. The whitening shader
+    // still injects at <map_fragment> / <common> the same way.
+    const m = new THREE.MeshLambertMaterial({
       map: texture || null,
       color: 0xffffff,
-      roughness: 0.33,
-      metalness: 0.0,
-      clearcoat: 0.66,
-      clearcoatRoughness: 0.13,
-      envMapIntensity: 1.1,
     });
     m.onBeforeCompile = (shader) => {
       shader.uniforms.uSplit = { value: splitRef.current };
@@ -171,16 +177,7 @@ function WhiteningMesh({ geometry, texture, flipped, splitRef, whitenRef, previe
   }, [texture, splitRef, whitenRef, previewAllRef]);
 
   useFrame(() => {
-    // ── Live realism tuning (read from refs so sliders update the look
-    //    instantly without re-rendering React or recompiling the shader).
-    //    These are all uniform/renderer updates — cheap every frame. ──
-    const wet = wetRef.current;        // 0..1 (0 = dry/matte, 1 = very wet)
-    // Clamped ranges — even at wet=1 we stay in "wet & soft" territory and
-    // never reach the plastic-mirror look that broke previous attempts.
-    material.roughness = THREE.MathUtils.lerp(0.55, 0.18, wet);
-    material.clearcoat = THREE.MathUtils.lerp(0.3, 0.9, wet);       // stays > 0 (no recompile)
-    material.clearcoatRoughness = THREE.MathUtils.lerp(0.25, 0.08, wet);
-    material.envMapIntensity = reflectRef.current * 2.0;            // 0..2
+    // Lambert has no roughness/clearcoat/envMap — only Brightness applies.
     gl.toneMappingExposure = 0.6 + brightRef.current * 1.0;        // 0.6..1.6
 
     // ── Whitening / split shader uniforms (once the shader has compiled) ──
@@ -206,16 +203,14 @@ function WhiteningMesh({ geometry, texture, flipped, splitRef, whitenRef, previe
 function Scene({ geometry, texture, flipped, controlsRef, splitRef, whitenRef, previewAllRef, wetRef, reflectRef, brightRef }) {
   return (
     <>
-      {/* Environment-ONLY specular. Directional lights are deliberately
-          absent — a sharp point-source light + clearcoat produces a small
-          plastic-CG glint, which is what made every previous attempt look
-          fake. A broad HDR environment instead produces large, soft,
-          softbox-style reflections that travel naturally across the wet
-          surface as you orbit — the Helios look. Ambient + hemisphere are
-          just there so the diffuse colour reads everywhere. */}
-      <ambientLight intensity={0.5} />
-      <hemisphereLight args={['#ffffff', '#e9ebef', 0.25]} />
-      <Environment preset="studio" environmentIntensity={0.7} />
+      {/* Minimal Helios-style lighting: a clean white key + soft fill +
+          ambient. No Environment / HDR — Lambert material doesn't reflect
+          one anyway, and Helios's exported material has no specular. The
+          key's Lambert gradient is what produces the "highlights moving as
+          you orbit" effect that the user saw in Helios. */}
+      <ambientLight intensity={0.45} />
+      <directionalLight position={[5, 12, 8]} intensity={0.85} color="#ffffff" />
+      <directionalLight position={[-6, 6, 4]} intensity={0.28} color="#ffffff" />
 
       <WhiteningMesh
         geometry={geometry}
@@ -582,32 +577,23 @@ export default function SmileSimulator({ open, scan, onClose }) {
           </div>
         )}
 
-        {/* Live realism panel — tune the look in real time */}
+        {/* Live view panel */}
         {ready && showSettings && (
           <div className="absolute bottom-16 right-4 w-60 bg-surface-1/95 backdrop-blur border border-white/12 rounded-xl shadow-2xl p-3.5 space-y-3">
             <div className="flex items-center justify-between">
               <span className="text-[11px] font-semibold text-white flex items-center gap-1.5">
-                <Settings size={12} className="text-teal-300" /> Realism
+                <Settings size={12} className="text-teal-300" /> View
               </span>
-              <span className="text-[9px] text-gray-500">live · drag to taste</span>
+              <span className="text-[9px] text-gray-500">live</span>
             </div>
-            <RealismSlider
-              icon={<Droplets size={12} className="text-sky-300" />}
-              label="Wetness" value={wetPct}
-              onChange={(v) => { wetRef.current = v / 100; setWetPct(v); }}
-            />
-            <RealismSlider
-              icon={<Sparkles size={12} className="text-teal-300" />}
-              label="Reflections" value={reflectPct}
-              onChange={(v) => { reflectRef.current = v / 100; setReflectPct(v); }}
-            />
             <RealismSlider
               icon={<Sun size={12} className="text-amber-300" />}
               label="Brightness" value={brightPct}
               onChange={(v) => { brightRef.current = v / 100; setBrightPct(v); }}
             />
-            <div className="text-[9px] text-gray-500 leading-relaxed pt-0.5 border-t border-white/8">
-              Found the look? Tell me the three numbers and I’ll make them the default.
+            <div className="text-[10px] text-gray-400 leading-relaxed pt-1 border-t border-white/8">
+              Matching Helios's exported material: <span className="text-teal-300">Lambert diffuse</span>,
+              no specular / no reflections. Highlights are the Lambert gradient.
             </div>
           </div>
         )}
