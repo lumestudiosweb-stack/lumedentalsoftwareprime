@@ -131,21 +131,19 @@ function WhiteningMesh({ geometry, texture, flipped, splitRef, whitenRef, previe
   const uniformsRef = useRef(null);
 
   const material = useMemo(() => {
-    const m = new THREE.MeshPhysicalMaterial({
+    // UNLIT photographic render — the Helios approach. The scanner already
+    // baked the real colour, the wet highlights, and the depth into the
+    // texture; it is essentially a photograph wrapped on the mesh. Helios
+    // just displays that photograph. Every PBR attempt I made (clearcoat,
+    // environment reflections, specular) ADDED synthetic CG highlights on
+    // top of an already-photographic image, which is exactly what made it
+    // look fake. MeshBasicMaterial does no lighting math whatsoever — the
+    // texture is the output, full stop. The whitening shader still works
+    // because it edits diffuseColor right after <map_fragment>, before the
+    // material outputs gl_FragColor.
+    const m = new THREE.MeshBasicMaterial({
       map: texture || null,
       color: 0xffffff,
-      // The WET "sweaty" saliva sheen the real scan has: a very smooth
-      // surface under a max clear coat reflecting a bright neutral
-      // environment. Low roughness => sharp, moist-looking glints that
-      // travel across the teeth AND gums as you orbit. Highlights are pure
-      // white (PBR-Neutral tone-maps them gracefully), so they read as
-      // moisture on top of the real colour, not as a colour change.
-      roughness: 0.16,
-      metalness: 0.0,
-      clearcoat: 1.0,
-      clearcoatRoughness: 0.03,
-      envMapIntensity: 1.6,
-      specularIntensity: 1.0,
     });
     m.onBeforeCompile = (shader) => {
       shader.uniforms.uSplit = { value: splitRef.current };
@@ -579,32 +577,24 @@ export default function SmileSimulator({ open, scan, onClose }) {
           </div>
         )}
 
-        {/* Live realism panel — tune the look in real time */}
+        {/* Live view panel — tune brightness in real time */}
         {ready && showSettings && (
           <div className="absolute bottom-16 right-4 w-60 bg-surface-1/95 backdrop-blur border border-white/12 rounded-xl shadow-2xl p-3.5 space-y-3">
             <div className="flex items-center justify-between">
               <span className="text-[11px] font-semibold text-white flex items-center gap-1.5">
-                <Settings size={12} className="text-teal-300" /> Realism
+                <Settings size={12} className="text-teal-300" /> View
               </span>
               <span className="text-[9px] text-gray-500">live · drag to taste</span>
             </div>
-            <RealismSlider
-              icon={<Droplets size={12} className="text-sky-300" />}
-              label="Wetness" value={wetPct}
-              onChange={(v) => { wetRef.current = v / 100; setWetPct(v); }}
-            />
-            <RealismSlider
-              icon={<Sparkles size={12} className="text-teal-300" />}
-              label="Reflections" value={reflectPct}
-              onChange={(v) => { reflectRef.current = v / 100; setReflectPct(v); }}
-            />
             <RealismSlider
               icon={<Sun size={12} className="text-amber-300" />}
               label="Brightness" value={brightPct}
               onChange={(v) => { brightRef.current = v / 100; setBrightPct(v); }}
             />
-            <div className="text-[9px] text-gray-500 leading-relaxed pt-0.5 border-t border-white/8">
-              Found the look? Tell me the three numbers and I’ll make them the default.
+            <div className="text-[10px] text-gray-400 leading-relaxed pt-1 border-t border-white/8">
+              Rendering the scan <span className="text-teal-300">unlit</span> — exactly as
+              your scanner captured it, the same way Helios shows it. No CG re-lighting
+              on top.
             </div>
           </div>
         )}
