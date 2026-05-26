@@ -7,6 +7,7 @@ import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { DecalGeometry } from 'three/examples/jsm/geometries/DecalGeometry.js';
+import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import ToothOverlay, { RealisticTooth } from './ToothOverlay';
 import ToothProgressionPopup from './ToothProgressionPopup';
 import { useXRayMaterial } from './useXRayMaterial';
@@ -136,21 +137,25 @@ export default function DentalViewer({ scanUrl, scanFormat, simulation, activeSt
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
       <Canvas
         camera={{ position: [0, 14, 42], fov: 34, near: 0.1, far: 1000 }}
-        gl={{ antialias: true, toneMapping: THREE.ACESFilmicToneMapping, toneMappingExposure: 1.1, localClippingEnabled: true }}
+        // PBR-Neutral tone mapping (no ACES warm-shift) + lower exposure.
+        // The previous ACES+1.1 was warming colours AND letting bright
+        // textures clip to chalk-white, the exact look the user flagged
+        // against the Helios reference.
+        gl={{ antialias: true, toneMapping: THREE.NeutralToneMapping, toneMappingExposure: 0.92, localClippingEnabled: true }}
         onCreated={({ gl }) => { gl.localClippingEnabled = true; }}
         shadows
         style={{ background: '#000' }}
       >
         <color attach="background" args={['#000000']} />
 
-        {/* Clinical lighting */}
-        <ambientLight intensity={0.5} />
-        <directionalLight position={[10, 30, 20]} intensity={1.4} castShadow shadow-mapSize={[2048, 2048]} color="#fff" />
-        <directionalLight position={[-10, 20, -15]} intensity={0.55} color="#eef" />
-        <spotLight position={[0, 40, 5]} intensity={0.8} angle={0.5} penumbra={0.5} color="#fff" />
-        <pointLight position={[0, -10, 25]} intensity={0.35} color="#ffeedd" />
-        <pointLight position={[20, 5, -10]} intensity={0.28} color="#aaccff" />
-        <pointLight position={[-20, 5, -10]} intensity={0.28} color="#aaccff" />
+        {/* Helios-style clinical lighting: a single white key + soft fill +
+            ambient. The previous rig had 7 lights totalling ~4.16 intensity,
+            which was 3-4x too bright and blew bright enamel out to chalk
+            white. This trio totals ~1.2 — the texture's real colour reads
+            instead of being washed out. */}
+        <ambientLight intensity={0.42} />
+        <directionalLight position={[6, 14, 10]} intensity={0.6} castShadow shadow-mapSize={[2048, 2048]} color="#ffffff" />
+        <directionalLight position={[-6, 8, -4]} intensity={0.2} color="#ffffff" />
 
         <Suspense fallback={<LoadingIndicator />}>
           {scanUrl ? (
@@ -589,8 +594,29 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
 
   // ── Load mesh (STL / PLY / OBJ) ─────────────────────────────
   useEffect(() => {
-    const finishGeo = (geo) => {
-      if (!geo.attributes.normal) geo.computeVertexNormals();
+    const finishGeo = (rawGeo) => {
+      // SMOOTH SHADING — without this the mesh renders faceted/CG because
+      // PLYLoader's toNonIndexed (called when the PLY has face-varying
+      // texcoords, which every Helios PLY does) destroys vertex sharing,
+      // and computeVertexNormals on non-indexed geometry then gives every
+      // face's three vertices the same face normal → flat shading per
+      // triangle. mergeVertices re-welds duplicated-position vertices
+      // before normals are computed, so normals get properly averaged
+      // across the surface → smooth shading. Texture seams stay split
+      // automatically because vertices with different UVs aren't merged.
+      let geo = rawGeo;
+      try {
+        const merged = mergeVertices(rawGeo, 1e-4);
+        if (merged && merged.attributes?.position?.count > 0) {
+          try { rawGeo.dispose(); } catch { /* noop */ }
+          geo = merged;
+        }
+      } catch { /* keep raw geo if merge fails */ }
+      // Always recompute normals AFTER the merge so they reflect the
+      // welded topology (smooth) instead of the pre-merge non-indexed
+      // topology (flat).
+      geo.deleteAttribute('normal');
+      geo.computeVertexNormals();
       geo.center();
       geo.computeBoundingBox();
       const size = new THREE.Vector3();
@@ -909,10 +935,14 @@ function TreatmentJourney({ url, format, textureUrl, simulation, activeStateInde
           vertexColors={!texture && hasVertexColors}
           emissive="#000000"
           emissiveIntensity={0}
-          roughness={0.48}
-          metalness={0.03}
-          clearcoat={0.1}
-          clearcoatRoughness={0.4}
+          // Lambert-ish: high roughness + no clear coat. Helios's exported
+          // .mtl uses illum 1 (Lambert, no specular). Keeping
+          // MeshPhysicalMaterial for the existing X-Ray swap / decal
+          // pipeline, but pushing it as close to Lambert as it gets.
+          roughness={0.92}
+          metalness={0}
+          clearcoat={0}
+          clearcoatRoughness={1}
           transparent={ghost}
           opacity={ghost ? 0.38 : 1}
           depthWrite={!ghost}
