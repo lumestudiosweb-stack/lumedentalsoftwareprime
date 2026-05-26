@@ -131,19 +131,22 @@ function WhiteningMesh({ geometry, texture, flipped, splitRef, whitenRef, previe
   const uniformsRef = useRef(null);
 
   const material = useMemo(() => {
-    // UNLIT photographic render — the Helios approach. The scanner already
-    // baked the real colour, the wet highlights, and the depth into the
-    // texture; it is essentially a photograph wrapped on the mesh. Helios
-    // just displays that photograph. Every PBR attempt I made (clearcoat,
-    // environment reflections, specular) ADDED synthetic CG highlights on
-    // top of an already-photographic image, which is exactly what made it
-    // look fake. MeshBasicMaterial does no lighting math whatsoever — the
-    // texture is the output, full stop. The whitening shader still works
-    // because it edits diffuseColor right after <map_fragment>, before the
-    // material outputs gl_FragColor.
-    const m = new THREE.MeshBasicMaterial({
+    // PBR with ENVIRONMENT-ONLY specular. Confirmed: Helios computes live
+    // specular (the wet highlights move as you orbit). Previous PBR attempts
+    // looked plastic because directional point-source lights produced sharp
+    // CG glints; Helios's wet highlights are broad and soft, which is the
+    // signature of HDR-environment-only lighting. So the Scene below has
+    // NO directional lights — the studio HDR is the sole specular source.
+    // The slider lerps below also clamp the wet range so even at 100% it
+    // stays "wet & soft", never "plastic mirror".
+    const m = new THREE.MeshPhysicalMaterial({
       map: texture || null,
       color: 0xffffff,
+      roughness: 0.33,
+      metalness: 0.0,
+      clearcoat: 0.66,
+      clearcoatRoughness: 0.13,
+      envMapIntensity: 1.1,
     });
     m.onBeforeCompile = (shader) => {
       shader.uniforms.uSplit = { value: splitRef.current };
@@ -171,11 +174,13 @@ function WhiteningMesh({ geometry, texture, flipped, splitRef, whitenRef, previe
     // ── Live realism tuning (read from refs so sliders update the look
     //    instantly without re-rendering React or recompiling the shader).
     //    These are all uniform/renderer updates — cheap every frame. ──
-    const wet = wetRef.current;        // 0..1  (0 = dry/matte, 1 = very wet)
-    material.roughness = THREE.MathUtils.lerp(0.5, 0.07, wet);
-    material.clearcoat = THREE.MathUtils.lerp(0.25, 1.0, wet);     // stays > 0 (no recompile)
-    material.clearcoatRoughness = THREE.MathUtils.lerp(0.22, 0.025, wet);
-    material.envMapIntensity = reflectRef.current * 2.0;           // 0..2
+    const wet = wetRef.current;        // 0..1 (0 = dry/matte, 1 = very wet)
+    // Clamped ranges — even at wet=1 we stay in "wet & soft" territory and
+    // never reach the plastic-mirror look that broke previous attempts.
+    material.roughness = THREE.MathUtils.lerp(0.55, 0.18, wet);
+    material.clearcoat = THREE.MathUtils.lerp(0.3, 0.9, wet);       // stays > 0 (no recompile)
+    material.clearcoatRoughness = THREE.MathUtils.lerp(0.25, 0.08, wet);
+    material.envMapIntensity = reflectRef.current * 2.0;            // 0..2
     gl.toneMappingExposure = 0.6 + brightRef.current * 1.0;        // 0.6..1.6
 
     // ── Whitening / split shader uniforms (once the shader has compiled) ──
@@ -201,16 +206,16 @@ function WhiteningMesh({ geometry, texture, flipped, splitRef, whitenRef, previe
 function Scene({ geometry, texture, flipped, controlsRef, splitRef, whitenRef, previewAllRef, wetRef, reflectRef, brightRef }) {
   return (
     <>
-      {/* All lights are pure WHITE — no colour cast, so the scan's baked
-          colour reads true (the earlier coloured fills were corrupting it).
-          Ambient + hemisphere keep the colour readable everywhere; the key
-          light + studio Environment give the glossy clear coat bright,
-          neutral things to reflect → the wet specular glints. */}
-      <ambientLight intensity={0.3} />
-      <hemisphereLight args={['#ffffff', '#e9ebef', 0.18]} />
-      <directionalLight position={[5, 13, 9]} intensity={0.55} color="#ffffff" />
-      <directionalLight position={[-6, 7, 4]} intensity={0.2} color="#ffffff" />
-      <Environment preset="studio" environmentIntensity={0.8} />
+      {/* Environment-ONLY specular. Directional lights are deliberately
+          absent — a sharp point-source light + clearcoat produces a small
+          plastic-CG glint, which is what made every previous attempt look
+          fake. A broad HDR environment instead produces large, soft,
+          softbox-style reflections that travel naturally across the wet
+          surface as you orbit — the Helios look. Ambient + hemisphere are
+          just there so the diffuse colour reads everywhere. */}
+      <ambientLight intensity={0.5} />
+      <hemisphereLight args={['#ffffff', '#e9ebef', 0.25]} />
+      <Environment preset="studio" environmentIntensity={0.7} />
 
       <WhiteningMesh
         geometry={geometry}
@@ -259,11 +264,11 @@ export default function SmileSimulator({ open, scan, onClose }) {
   // ── Live realism dials (read by the mesh each frame). Because I can't
   //    see the render while building, these let the user tune the exact
   //    look in real time instead of waiting on a redeploy. 0..1 each. ──
-  const wetRef = useRef(0.7);      // surface wetness/gloss
-  const reflectRef = useRef(0.5);  // reflection strength (-> envMapIntensity 0..2)
+  const wetRef = useRef(0.6);      // surface wetness/gloss (soft-wet default)
+  const reflectRef = useRef(0.55); // reflection strength (-> envMapIntensity 0..2)
   const brightRef = useRef(0.4);   // exposure (-> 0.6..1.6)
-  const [wetPct, setWetPct] = useState(70);
-  const [reflectPct, setReflectPct] = useState(50);
+  const [wetPct, setWetPct] = useState(60);
+  const [reflectPct, setReflectPct] = useState(55);
   const [brightPct, setBrightPct] = useState(40);
   const [showSettings, setShowSettings] = useState(false);
 
@@ -577,24 +582,32 @@ export default function SmileSimulator({ open, scan, onClose }) {
           </div>
         )}
 
-        {/* Live view panel — tune brightness in real time */}
+        {/* Live realism panel — tune the look in real time */}
         {ready && showSettings && (
           <div className="absolute bottom-16 right-4 w-60 bg-surface-1/95 backdrop-blur border border-white/12 rounded-xl shadow-2xl p-3.5 space-y-3">
             <div className="flex items-center justify-between">
               <span className="text-[11px] font-semibold text-white flex items-center gap-1.5">
-                <Settings size={12} className="text-teal-300" /> View
+                <Settings size={12} className="text-teal-300" /> Realism
               </span>
               <span className="text-[9px] text-gray-500">live · drag to taste</span>
             </div>
+            <RealismSlider
+              icon={<Droplets size={12} className="text-sky-300" />}
+              label="Wetness" value={wetPct}
+              onChange={(v) => { wetRef.current = v / 100; setWetPct(v); }}
+            />
+            <RealismSlider
+              icon={<Sparkles size={12} className="text-teal-300" />}
+              label="Reflections" value={reflectPct}
+              onChange={(v) => { reflectRef.current = v / 100; setReflectPct(v); }}
+            />
             <RealismSlider
               icon={<Sun size={12} className="text-amber-300" />}
               label="Brightness" value={brightPct}
               onChange={(v) => { brightRef.current = v / 100; setBrightPct(v); }}
             />
-            <div className="text-[10px] text-gray-400 leading-relaxed pt-1 border-t border-white/8">
-              Rendering the scan <span className="text-teal-300">unlit</span> — exactly as
-              your scanner captured it, the same way Helios shows it. No CG re-lighting
-              on top.
+            <div className="text-[9px] text-gray-500 leading-relaxed pt-0.5 border-t border-white/8">
+              Found the look? Tell me the three numbers and I’ll make them the default.
             </div>
           </div>
         )}
