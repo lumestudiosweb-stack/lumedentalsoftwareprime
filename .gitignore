@@ -39,9 +39,11 @@ frontend/public/teeth/**/*.jpeg
 # NEVER commit these — only the anonymized meshes in public/scans/meshes.
 STL PLY SCANS/
 *_ordersheet.pdf
-# Local Helios export folder — used to read .mtl material recipes locally,
-# never to be committed. Contains raw OBJ + paired patient ordersheet PDFs.
+# Local Helios export folders — used to read material recipes locally,
+# never to be committed. Contain raw OBJ/PLY/STL + paired patient
+# ordersheet PDFs (PII). NEVER commit anything from these folders.
 obj scan/
+full scan/
 uploads/
 temp/
 *.log

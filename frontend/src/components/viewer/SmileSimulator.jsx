@@ -6,6 +6,7 @@ import * as THREE from 'three';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
+import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import {
   X, Sparkles, Play, Pause, RotateCcw, FlipVertical2,
   Loader2, AlertTriangle, Sun, Eye, Settings,
@@ -88,8 +89,35 @@ const GLSL_APPLY = /* glsl */`
    but shallow), rotate it to world-Y, make sure the wider span is left↔right,
    then normalise scale so every scan frames identically.
 ─────────────────────────────────────────────────────────────────────── */
-function reorientAndFrame(geo) {
-  if (!geo.attributes.normal) geo.computeVertexNormals();
+function reorientAndFrame(rawGeo) {
+  // ── SMOOTH SHADING (the single biggest realism fix) ───────────────────
+  //   PLYLoader calls toNonIndexed() whenever a PLY has face-varying
+  //   texcoords (which every Helios PLY does). That breaks the original
+  //   vertex sharing — each face ends up with its own 3 unique vertices at
+  //   the duplicated positions. computeVertexNormals() on non-indexed
+  //   geometry then assigns the FACE normal to all 3 of those vertices,
+  //   which produces FLAT shading per triangle. The mesh ends up looking
+  //   faceted/CG. Every shader/material/lighting tweak I tried before this
+  //   was just polishing a faceted model.
+  //
+  //   mergeVertices re-welds vertices that share a position (tolerance
+  //   1e-4 mm) BEFORE we compute normals, so normals get properly averaged
+  //   across the surface → smooth shading, the way Helios renders. Texture
+  //   seams are preserved automatically because mergeVertices won't fold
+  //   together vertices whose UVs differ. ───────────────────────────────
+  let geo = rawGeo;
+  try {
+    const merged = mergeVertices(rawGeo, 1e-4);
+    if (merged && merged.attributes?.position?.count > 0) {
+      try { rawGeo.dispose(); } catch { /* noop */ }
+      geo = merged;
+    }
+  } catch { /* keep the raw geometry if mergeVertices fails for any reason */ }
+
+  // Always recompute normals AFTER the merge so they reflect the welded
+  // vertex topology (smooth), not the pre-merge non-indexed topology (flat).
+  geo.deleteAttribute('normal');
+  geo.computeVertexNormals();
   geo.center();
   geo.computeBoundingBox();
 
@@ -309,9 +337,13 @@ export default function SmileSimulator({ open, scan, onClose }) {
     setGeometry(null);
     setTexture(null);
 
-    const onGeo = (geo) => {
-      if (cancelled) { try { geo.dispose(); } catch { /* noop */ } return; }
-      try { reorientAndFrame(geo); } catch { /* keep raw geo if reorient fails */ }
+    const onGeo = (rawGeo) => {
+      if (cancelled) { try { rawGeo.dispose(); } catch { /* noop */ } return; }
+      // reorientAndFrame may return a NEW geometry (the merged-vertices one)
+      // — use the returned reference, not the raw input, so we keep the
+      // welded, smooth-shaded mesh instead of the original flat-shaded one.
+      let geo = rawGeo;
+      try { geo = reorientAndFrame(rawGeo); } catch { geo = rawGeo; }
       geoRef.current = geo;
       setGeometry(geo);
       setStatus('idle');
